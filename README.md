@@ -10,59 +10,60 @@ Extract engineering decisions from your GitHub repository and make them availabl
 
 ### Prerequisites
 
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) (Python package manager)
-- A GitHub personal access token (classic, with `repo` scope)
-- An [Anthropic API key](https://console.anthropic.com/)
+- [uv](https://docs.astral.sh/uv/) (Python package manager) — install with `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- A GitHub personal access token (classic, with `repo` scope) — [create one here](https://github.com/settings/tokens)
+- An Anthropic API key — [get one here](https://console.anthropic.com/) (needed for extraction and queries, costs ~$0.01-0.10 per extraction run)
 
-### Install
+### 1. Install setkontext
 
 ```bash
 git clone https://github.com/patxkil/setkontext.git
 cd setkontext
-uv sync
+uv tool install .
 ```
 
-### Set up in your project
+This installs `setkontext` as a global CLI tool. Verify it works:
 
-Navigate to the project where you want decisions available:
+```bash
+setkontext --help
+```
+
+### 2. Set up in your project
+
+Go to the project where you want engineering decisions available:
 
 ```bash
 cd /path/to/your/project
-
-# Initialize setkontext (creates .env, .mcp.json, updates .gitignore)
-uv run --directory /path/to/setkontext setkontext init owner/repo
+setkontext init owner/repo
 ```
 
-This will prompt for your GitHub token and Anthropic API key, then:
+It will prompt for your GitHub token and Anthropic API key, then:
 1. Save credentials to `.env` (gitignored)
 2. Create `.mcp.json` so Claude Code / Cursor auto-discover the MCP server
-3. Add `setkontext.db` and `.env` to `.gitignore`
+3. Add `setkontext.db` and `.env` to your `.gitignore`
 
-### Extract decisions
+### 3. Extract decisions
 
 ```bash
-uv run --directory /path/to/setkontext setkontext extract
+setkontext extract
 ```
 
 This fetches ADRs, architecture docs, and merged PRs from your repository, then uses Claude to extract engineering decisions. Results are stored in `setkontext.db` in your project directory.
 
-### Use with AI agents
+### 4. Use with your AI agent
 
 **Claude Code / Cursor (MCP — recommended):**
-Restart Claude Code after running `init`. It picks up `.mcp.json` and your agent gets these tools:
-- `query_decisions` — Ask questions like "why did we choose Postgres?" or "how should I add caching?"
-- `get_decisions_by_entity` — Find all decisions about a specific technology
-- `list_entities` — See all technologies/patterns that have decisions
-- `get_decision_context` — Get full details on a specific decision
+
+Restart Claude Code after running `init`. It picks up `.mcp.json` automatically and your agent gets these tools:
+- `query_decisions` — "why did we choose Postgres?" or "how should I add caching?"
+- `get_decisions_by_entity` — all decisions about a specific technology
+- `list_entities` — see all technologies/patterns that have decisions
+- `get_decision_context` — full details on a specific decision
 
 **Static context file (any agent):**
 ```bash
-# Generate CLAUDE.md (for Claude Code)
-uv run --directory /path/to/setkontext setkontext generate
-
-# Generate .cursorrules (for Cursor)
-uv run --directory /path/to/setkontext setkontext generate -f cursor
+setkontext generate            # Creates CLAUDE.md
+setkontext generate -f cursor  # Creates .cursorrules
 ```
 
 ## CLI Reference
@@ -93,7 +94,7 @@ uv run --directory /path/to/setkontext setkontext generate -f cursor
 
 This is v0.1.0. Expect rough edges. Known limitations:
 - Only GitHub repositories (no GitLab/Bitbucket yet)
-- Extraction uses Anthropic API (costs ~$0.01-0.10 per run depending on repo size)
+- Extraction and queries use the Anthropic API — you need your own API key
 - No incremental extraction yet (re-running extract processes everything again, but merges results)
 
 ## Feedback

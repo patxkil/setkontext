@@ -43,6 +43,12 @@ def _write_env(project_dir: Path, repo: str, token: str, anthropic_key: str) -> 
     rprint(f"Credentials saved to {env_path}")
 
 
+def _find_setkontext_source_dir() -> Path:
+    """Find the root directory of the setkontext source (where pyproject.toml lives)."""
+    # setkontext/ package dir → parent is the project root
+    return Path(__file__).resolve().parent.parent
+
+
 def _write_mcp_config(project_dir: Path) -> None:
     """Create .mcp.json for per-project MCP server configuration."""
     import json
@@ -54,8 +60,10 @@ def _write_mcp_config(project_dir: Path) -> None:
     if setkontext_bin:
         command, args = setkontext_bin, ["serve"]
     else:
+        # Fall back to uv run, pointing at the setkontext source directory
+        source_dir = _find_setkontext_source_dir()
         command, args = "uv", [
-            "run", "--directory", str(project_dir),
+            "run", "--directory", str(source_dir),
             "setkontext", "serve",
         ]
 
@@ -133,21 +141,6 @@ def serve() -> None:
     import asyncio
     from setkontext.mcp_server import main as mcp_main
     asyncio.run(mcp_main())
-
-
-@app.command()
-def setup(
-    repo: str = typer.Argument(help="GitHub repository (owner/repo)"),
-    token: str = typer.Option(
-        ..., prompt=True, hide_input=True, help="GitHub personal access token"
-    ),
-    anthropic_key: str = typer.Option(
-        None, "--anthropic-key", help="Anthropic API key (or set ANTHROPIC_API_KEY env var)"
-    ),
-) -> None:
-    """Configure credentials only (without MCP setup). Use 'init' for full setup."""
-    _write_env(Path.cwd(), repo, token, anthropic_key or "")
-    rprint(f"[green]Configured for {repo}[/green]")
 
 
 @app.command()
@@ -259,6 +252,10 @@ def extract(
             rprint("\n[yellow]No decisions were extracted.[/yellow]")
             rprint("This can happen if the repository has no PRs, ADRs, or architecture docs.")
             rprint("Try increasing --limit or check that the repository has documented decisions.")
+        else:
+            rprint("\n[bold]Try it out:[/bold]")
+            rprint('  setkontext query "Why did we choose this tech stack?"')
+            rprint("  setkontext stats")
 
     finally:
         client.close()
