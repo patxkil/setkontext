@@ -1,0 +1,21 @@
+[project]
+name = "setkontext"
+version = "0.1.0"
+description = "Extract engineering decisions from GitHub PRs and ADRs for AI coding agents"
+requires-python = ">=3.11"
+dependencies = [
+    "pygithub",
+    "anthropic",
+    "typer",
+    "rich",
+    "streamlit",
+    "python-dotenv",
+    "mcp>=1.26.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+setkontext = "setkontext.cli:app"

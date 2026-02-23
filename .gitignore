@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+*.db
+*.db-shm
+*.db-wal
+.env
+*.egg-info/
+dist/
+build/
+.uv/
+.claude/
