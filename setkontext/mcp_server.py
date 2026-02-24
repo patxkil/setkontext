@@ -35,6 +35,7 @@ from mcp.server import Server
 from setkontext.config import Config
 from setkontext.context import generate_context
 from setkontext.query.engine import QueryEngine
+from setkontext.query.validator import DecisionValidator
 from setkontext.storage.db import get_connection
 from setkontext.storage.repository import Repository
 
@@ -113,11 +114,37 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="validate_approach",
+            description=(
+                "IMPORTANT: Call this BEFORE implementing any significant technical choice. "
+                "Validates whether a proposed approach conflicts with existing engineering decisions. "
+                "Pass your intended approach (e.g., 'I plan to use Redis for caching' or "
+                "'I will add a REST endpoint using Express') and get back whether it aligns with, "
+                "conflicts with, or is not covered by team decisions. "
+                "This prevents accidentally contradicting established architecture."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "proposed_approach": {
+                        "type": "string",
+                        "description": "What you plan to implement and how",
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Additional context: what feature/task this is for",
+                    },
+                },
+                "required": ["proposed_approach"],
+            },
+        ),
+        types.Tool(
             name="get_decision_context",
             description=(
                 "Get the full engineering decisions context for this project. "
                 "Returns a structured summary of all key decisions, tech stack, and patterns. "
-                "Call this at the START of any implementation task to understand project constraints."
+                "Call this at the START of any implementation task to understand project constraints. "
+                "Then use validate_approach before making specific technical choices."
             ),
             inputSchema={
                 "type": "object",
@@ -143,6 +170,11 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     try:
         if name == "query_decisions":
             return _handle_query(arguments["question"])
+        elif name == "validate_approach":
+            return _handle_validate(
+                arguments["proposed_approach"],
+                arguments.get("context", ""),
+            )
         elif name == "get_decisions_by_entity":
             return _handle_entity_query(arguments["entity"])
         elif name == "get_decision_context":
@@ -179,6 +211,24 @@ def _handle_query(question: str) -> list[types.TextContent]:
     client = anthropic.Anthropic(api_key=config.anthropic_api_key)
     engine = QueryEngine(repo, client)
     result = engine.query(question)
+    return [types.TextContent(type="text", text=result.to_json())]
+
+
+def _handle_validate(proposed_approach: str, context: str) -> list[types.TextContent]:
+    config = Config.load()
+    if not config.anthropic_api_key:
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "verdict": "NO_COVERAGE",
+                "recommendation": "Cannot validate: ANTHROPIC_API_KEY not set. Proceed with caution.",
+            }, indent=2),
+        )]
+
+    repo = _get_repo()
+    client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+    validator = DecisionValidator(repo, client)
+    result = validator.validate(proposed_approach, context)
     return [types.TextContent(type="text", text=result.to_json())]
 
 
