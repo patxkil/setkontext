@@ -12,8 +12,10 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from setkontext.config import Config
 from setkontext.context import generate_context_file
 from setkontext.extraction.adr import extract_adr_decisions
+from setkontext.entire.fetcher import EntireFetcher
 from setkontext.extraction.doc import extract_doc_decisions
 from setkontext.extraction.pr import extract_pr_decisions
+from setkontext.extraction.session import extract_session_decisions
 from setkontext.github.client import GitHubClient
 from setkontext.github.fetcher import Fetcher
 from setkontext.query.engine import QueryEngine
@@ -147,6 +149,11 @@ def serve() -> None:
 def extract(
     limit: int = typer.Option(50, help="Max number of PRs to analyze"),
     skip_prs: bool = typer.Option(False, help="Skip PR extraction (ADRs and docs only)"),
+    include_sessions: bool = typer.Option(
+        False, "--include-sessions",
+        help="Include Entire.io agent session transcripts (requires entire/checkpoints/v1 branch)",
+    ),
+    session_limit: int = typer.Option(50, help="Max number of sessions to analyze"),
     db_path: str = typer.Option("setkontext.db", help="Database file path"),
 ) -> None:
     """Extract decisions from the configured repository."""
@@ -166,6 +173,14 @@ def extract(
 
     client = GitHubClient(token=config.github_token, repo=config.repo)
     fetcher = Fetcher(client)
+
+    anthropic_client: anthropic.Anthropic | None = None
+
+    def _get_anthropic_client() -> anthropic.Anthropic:
+        nonlocal anthropic_client
+        if anthropic_client is None:
+            anthropic_client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+        return anthropic_client
 
     try:
         with Progress(
@@ -194,13 +209,13 @@ def extract(
             rprint(f"Found [bold]{len(docs)}[/bold] documentation files")
 
             if docs:
-                anthropic_client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+                doc_client = _get_anthropic_client()
                 doc_decision_count = 0
 
                 task = progress.add_task("Analyzing docs for decisions...", total=len(docs))
                 for doc in docs:
                     rprint(f"  Analyzing {doc.path}...")
-                    source, decisions = extract_doc_decisions(doc, config.repo, anthropic_client)
+                    source, decisions = extract_doc_decisions(doc, config.repo, doc_client)
                     repo_store.save_extraction_result(source, decisions)
                     doc_decision_count += len(decisions)
                     rprint(f"    → [green]{len(decisions)} decision(s)[/green]")
@@ -215,15 +230,13 @@ def extract(
                 rprint(f"Found [bold]{len(prs)}[/bold] merged PRs")
 
                 if prs:
-                    # Extract decisions from PRs using Claude
-                    if not docs:  # Only create client if not already created
-                        anthropic_client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+                    pr_client = _get_anthropic_client()
                     pr_decision_count = 0
                     pr_with_decisions = 0
 
                     task = progress.add_task("Analyzing PRs for decisions...", total=len(prs))
                     for pr in prs:
-                        source, decisions = extract_pr_decisions(pr, config.repo, anthropic_client)
+                        source, decisions = extract_pr_decisions(pr, config.repo, pr_client)
                         repo_store.save_extraction_result(source, decisions)
                         if decisions:
                             pr_with_decisions += 1
@@ -237,16 +250,57 @@ def extract(
                         f"({len(prs) - pr_with_decisions} PRs had no decisions)"
                     )
 
+            # Fetch and extract Entire.io sessions
+            if include_sessions:
+                progress.add_task("Scanning for Entire.io sessions...", total=None)
+                entire_fetcher = EntireFetcher(repo_dir=Path.cwd())
+
+                if entire_fetcher.has_checkpoint_branch():
+                    sessions = entire_fetcher.fetch_sessions(limit=session_limit)
+                    rprint(f"Found [bold]{len(sessions)}[/bold] Entire.io sessions")
+
+                    if sessions:
+                        session_client = _get_anthropic_client()
+                        session_decision_count = 0
+                        sessions_with_decisions = 0
+
+                        task = progress.add_task("Analyzing sessions for decisions...", total=len(sessions))
+                        for session in sessions:
+                            source, decisions = extract_session_decisions(
+                                session, config.repo, session_client
+                            )
+                            repo_store.save_extraction_result(source, decisions)
+                            if decisions:
+                                sessions_with_decisions += 1
+                                session_decision_count += len(decisions)
+                                rprint(
+                                    f"  Session {session.checkpoint_id[:8]}: "
+                                    f"[green]{len(decisions)} decision(s)[/green]"
+                                )
+                            progress.update(task, advance=1)
+
+                        rprint(
+                            f"Extracted [bold]{session_decision_count}[/bold] decisions from "
+                            f"[bold]{sessions_with_decisions}[/bold] sessions "
+                            f"({len(sessions) - sessions_with_decisions} sessions had no decisions)"
+                        )
+                else:
+                    rprint("[yellow]No Entire.io checkpoint branch found. Skipping session extraction.[/yellow]")
+                    rprint("  Install Entire.io (https://entire.io) and run agent sessions to populate this.")
+
         # Print summary
         stats = repo_store.get_stats()
         rprint("\n[bold]Extraction complete:[/bold]")
         rprint(f"  Total decisions: {stats['total_decisions']}")
         rprint(f"  Unique entities: {stats['unique_entities']}")
-        rprint(
-            f"  Sources: {stats['pr_sources']} PRs, "
-            f"{stats['adr_sources']} ADRs, "
-            f"{stats.get('doc_sources', 0)} docs"
-        )
+        source_parts = [
+            f"{stats['pr_sources']} PRs",
+            f"{stats['adr_sources']} ADRs",
+            f"{stats.get('doc_sources', 0)} docs",
+        ]
+        if stats.get("session_sources", 0) > 0:
+            source_parts.append(f"{stats['session_sources']} sessions")
+        rprint(f"  Sources: {', '.join(source_parts)}")
 
         if stats["total_decisions"] == 0:
             rprint("\n[yellow]No decisions were extracted.[/yellow]")
@@ -316,6 +370,8 @@ def stats(
         rprint(f"  PR sources:      {s['pr_sources']}")
         rprint(f"  ADR sources:     {s['adr_sources']}")
         rprint(f"  Doc sources:     {s.get('doc_sources', 0)}")
+        if s.get("session_sources", 0) > 0:
+            rprint(f"  Session sources: {s['session_sources']}")
 
         entities = repo_store.get_entities()
         if entities:

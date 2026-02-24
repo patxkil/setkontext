@@ -15,7 +15,7 @@ class Entity:
 @dataclass
 class Source:
     id: str  # "pr:123" or "adr:docs/adr/001.md"
-    source_type: str  # "pr" | "adr" | "doc"
+    source_type: str  # "pr" | "adr" | "doc" | "session"
     repo: str  # "owner/repo"
     url: str  # GitHub permalink
     title: str

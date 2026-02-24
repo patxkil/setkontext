@@ -158,6 +158,9 @@ class Repository:
         doc_sources = self._conn.execute(
             "SELECT COUNT(*) FROM sources WHERE source_type = 'doc'"
         ).fetchone()[0]
+        session_sources = self._conn.execute(
+            "SELECT COUNT(*) FROM sources WHERE source_type = 'session'"
+        ).fetchone()[0]
 
         return {
             "total_sources": sources_count,
@@ -166,6 +169,7 @@ class Repository:
             "pr_sources": pr_sources,
             "adr_sources": adr_sources,
             "doc_sources": doc_sources,
+            "session_sources": session_sources,
         }
 
     def _row_to_decision_dict(self, row: sqlite3.Row) -> dict:

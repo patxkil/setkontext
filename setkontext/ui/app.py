@@ -110,18 +110,19 @@ def render_decisions_page() -> None:
     stats = repo.get_stats()
 
     # Stats row
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Total Decisions", stats["total_decisions"])
-    col2.metric("Unique Entities", stats["unique_entities"])
-    col3.metric("PR Sources", stats["pr_sources"])
-    col4.metric("ADR Sources", stats["adr_sources"])
-    col5.metric("Doc Sources", stats.get("doc_sources", 0))
+    cols = st.columns(6)
+    cols[0].metric("Total Decisions", stats["total_decisions"])
+    cols[1].metric("Unique Entities", stats["unique_entities"])
+    cols[2].metric("PR Sources", stats["pr_sources"])
+    cols[3].metric("ADR Sources", stats["adr_sources"])
+    cols[4].metric("Doc Sources", stats.get("doc_sources", 0))
+    cols[5].metric("Session Sources", stats.get("session_sources", 0))
 
     # Filters
     st.subheader("Filter")
     filter_col1, filter_col2 = st.columns(2)
     with filter_col1:
-        source_filter = st.selectbox("Source type", ["All", "pr", "adr", "doc"])
+        source_filter = st.selectbox("Source type", ["All", "pr", "adr", "doc", "session"])
     with filter_col2:
         entities = repo.get_entities()
         entity_names = ["All"] + [e["entity"] for e in entities]
