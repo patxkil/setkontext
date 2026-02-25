@@ -9,6 +9,7 @@ import typer
 from rich import print as rprint
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+from setkontext.activity import read_activity_log
 from setkontext.config import Config
 from setkontext.context import generate_context_file
 from setkontext.extraction.adr import extract_adr_decisions
@@ -77,6 +78,7 @@ def _write_mcp_config(project_dir: Path) -> None:
                 "args": args,
                 "env": {
                     "SETKONTEXT_DB_PATH": str(project_dir / "setkontext.db"),
+                    "SETKONTEXT_LOG_PATH": str(project_dir / "setkontext-activity.jsonl"),
                 },
             }
         }
@@ -89,7 +91,7 @@ def _write_mcp_config(project_dir: Path) -> None:
 def _update_gitignore(project_dir: Path) -> None:
     """Ensure .gitignore includes setkontext files that shouldn't be committed."""
     gitignore_path = project_dir / ".gitignore"
-    entries_to_add = ["setkontext.db", ".env"]
+    entries_to_add = ["setkontext.db", "setkontext-activity.jsonl", ".env"]
 
     existing_lines: set[str] = set()
     if gitignore_path.exists():
@@ -416,6 +418,141 @@ def generate(
         rprint(f"  {stats['total_decisions']} decisions, {stats['unique_entities']} entities")
     finally:
         conn.close()
+
+
+@app.command()
+def activity(
+    limit: int = typer.Option(20, help="Number of recent entries to show"),
+    tool: str = typer.Option(None, "--tool", "-t", help="Filter by tool name"),
+    output_json: bool = typer.Option(False, "--json", help="Output raw JSONL"),
+    log_path: str = typer.Option(None, "--log-path", help="Path to activity log file"),
+) -> None:
+    """Show recent MCP tool activity.
+
+    Displays what context setkontext gave to AI agents, including queries,
+    validation results, and which decisions were surfaced.
+    """
+    import json as json_mod
+    from datetime import datetime
+
+    path = Path(log_path) if log_path else None
+    entries = read_activity_log(limit=limit, tool_name=tool, log_path=path)
+
+    if not entries:
+        rprint("[yellow]No activity recorded yet.[/yellow]")
+        rprint("Activity is logged when AI agents call setkontext MCP tools.")
+        rprint("Make sure your agent has used setkontext tools at least once.")
+        raise typer.Exit(0)
+
+    if output_json:
+        for entry in entries:
+            typer.echo(json_mod.dumps(entry, default=str))
+        return
+
+    rprint(f"[bold]Recent setkontext activity[/bold] ({len(entries)} entries)\n")
+
+    for entry in entries:
+        ts = entry.get("timestamp", "")
+        # Show just time portion if it's today
+        try:
+            dt = datetime.fromisoformat(ts)
+            time_str = dt.strftime("%H:%M:%S")
+        except (ValueError, TypeError):
+            time_str = ts[:19] if ts else "??:??:??"
+
+        tool_name = entry.get("tool_name", "unknown")
+        duration = entry.get("duration_ms", 0)
+        error = entry.get("error")
+        args = entry.get("arguments", {})
+        preview = entry.get("result_preview", "")
+
+        # Tool name with color
+        if error:
+            rprint(f"[dim]{time_str}[/dim] [red]{tool_name}[/red]")
+            rprint(f"  [red]Error: {error}[/red]")
+        else:
+            rprint(f"[dim]{time_str}[/dim] [cyan bold]{tool_name}[/cyan bold]")
+            _print_tool_summary(tool_name, args, preview, duration)
+
+        rprint("")  # blank line between entries
+
+
+def _print_tool_summary(tool_name: str, args: dict, preview: str, duration: int) -> None:
+    """Print a human-readable summary line for a tool call."""
+    import json as json_mod
+
+    if tool_name == "query_decisions":
+        question = args.get("question", "")
+        # Count decisions in result
+        decision_count = _count_decisions_in_preview(preview)
+        rprint(f'  Question: "{question}"')
+        rprint(f"  [dim]→ {duration}ms, {decision_count} decision(s) matched[/dim]")
+
+    elif tool_name == "validate_approach":
+        approach = args.get("proposed_approach", "")
+        if len(approach) > 80:
+            approach = approach[:77] + "..."
+        verdict = _extract_json_field(preview, "verdict")
+        conflicts = _count_json_array(preview, "conflicts")
+        verdict_color = {
+            "CONFLICTS": "red",
+            "ALIGNS": "green",
+            "NO_COVERAGE": "yellow",
+        }.get(verdict, "white")
+        rprint(f'  Approach: "{approach}"')
+        detail = f"{conflicts} conflict(s)" if verdict == "CONFLICTS" else ""
+        rprint(f"  [dim]→[/dim] [{verdict_color}]{verdict}[/{verdict_color}]"
+               + (f" ({detail})" if detail else "")
+               + f"[dim], {duration}ms[/dim]")
+
+    elif tool_name == "get_decisions_by_entity":
+        entity = args.get("entity", "")
+        decision_count = _extract_json_field(preview, "decision_count")
+        rprint(f'  Entity: "{entity}"')
+        rprint(f"  [dim]→ {decision_count or '?'} decision(s), {duration}ms[/dim]")
+
+    elif tool_name == "list_entities":
+        entity_count = _extract_json_field(preview, "total_entities")
+        rprint(f"  [dim]→ {entity_count or '?'} entities, {duration}ms[/dim]")
+
+    elif tool_name == "get_decision_context":
+        rprint(f"  [dim]→ Full context loaded, {duration}ms[/dim]")
+
+    else:
+        rprint(f"  [dim]→ {duration}ms[/dim]")
+
+
+def _count_decisions_in_preview(preview: str) -> int:
+    """Try to count decisions from a result preview."""
+    import json as json_mod
+    try:
+        data = json_mod.loads(preview)
+        if isinstance(data.get("decisions"), list):
+            return len(data["decisions"])
+        return data.get("sources_searched", 0)
+    except (json_mod.JSONDecodeError, TypeError):
+        return 0
+
+
+def _extract_json_field(preview: str, field: str) -> str:
+    """Try to extract a field from a JSON preview."""
+    import json as json_mod
+    try:
+        data = json_mod.loads(preview)
+        return str(data.get(field, ""))
+    except (json_mod.JSONDecodeError, TypeError):
+        return ""
+
+
+def _count_json_array(preview: str, field: str) -> int:
+    """Try to count items in a JSON array field."""
+    import json as json_mod
+    try:
+        data = json_mod.loads(preview)
+        arr = data.get(field, [])
+        return len(arr) if isinstance(arr, list) else 0
+    except (json_mod.JSONDecodeError, TypeError):
+        return 0
 
 
 if __name__ == "__main__":

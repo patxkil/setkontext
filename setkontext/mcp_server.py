@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import anthropic
@@ -32,6 +33,7 @@ import mcp.server.stdio
 import mcp.types as types
 from mcp.server import Server
 
+from setkontext.activity import log_tool_call
 from setkontext.config import Config
 from setkontext.context import generate_context
 from setkontext.query.engine import QueryEngine
@@ -167,26 +169,43 @@ async def list_tools() -> list[types.Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+    start = time.time()
+    result: list[types.TextContent] = []
+    error: str | None = None
     try:
-        if name == "query_decisions":
-            return _handle_query(arguments["question"])
-        elif name == "validate_approach":
-            return _handle_validate(
-                arguments["proposed_approach"],
-                arguments.get("context", ""),
-            )
-        elif name == "get_decisions_by_entity":
-            return _handle_entity_query(arguments["entity"])
-        elif name == "get_decision_context":
-            return _handle_full_context()
-        elif name == "list_entities":
-            return _handle_list_entities()
-        else:
-            return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+        result = _dispatch_tool(name, arguments)
+        return result
     except FileNotFoundError as e:
-        return [types.TextContent(type="text", text=f"Setup required: {e}")]
+        error = str(e)
+        result = [types.TextContent(type="text", text=f"Setup required: {e}")]
+        return result
     except Exception as e:
-        return [types.TextContent(type="text", text=f"Error: {e}")]
+        error = str(e)
+        result = [types.TextContent(type="text", text=f"Error: {e}")]
+        return result
+    finally:
+        duration_ms = int((time.time() - start) * 1000)
+        result_text = result[0].text if result else ""
+        log_tool_call(name, arguments, result_text, error, duration_ms)
+
+
+def _dispatch_tool(name: str, arguments: dict) -> list[types.TextContent]:
+    """Route a tool call to the appropriate handler."""
+    if name == "query_decisions":
+        return _handle_query(arguments["question"])
+    elif name == "validate_approach":
+        return _handle_validate(
+            arguments["proposed_approach"],
+            arguments.get("context", ""),
+        )
+    elif name == "get_decisions_by_entity":
+        return _handle_entity_query(arguments["entity"])
+    elif name == "get_decision_context":
+        return _handle_full_context()
+    elif name == "list_entities":
+        return _handle_list_entities()
+    else:
+        return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
 def _handle_query(question: str) -> list[types.TextContent]:
