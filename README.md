@@ -56,14 +56,36 @@ This fetches ADRs, architecture docs, and merged PRs from your repository, then 
 
 Restart Claude Code after running `init`. It picks up `.mcp.json` automatically and your agent gets these tools:
 - `query_decisions` — "why did we choose Postgres?" or "how should I add caching?"
+- `validate_approach` — checks if a proposed implementation conflicts with existing decisions
 - `get_decisions_by_entity` — all decisions about a specific technology
 - `list_entities` — see all technologies/patterns that have decisions
-- `get_decision_context` — full details on a specific decision
+- `get_decision_context` — full project decision summary
 
 **Static context file (any agent):**
 ```bash
 setkontext generate            # Creates CLAUDE.md
 setkontext generate -f cursor  # Creates .cursorrules
+```
+
+### 5. See what your agent received
+
+After your agent has used setkontext tools, review what context it got:
+
+```bash
+setkontext activity                           # last 20 tool calls
+setkontext activity --tool validate_approach  # just validation checks
+setkontext activity --json                    # raw JSONL for scripting
+```
+
+Example output:
+```
+14:30:45 validate_approach
+  Approach: "Use MongoDB for caching"
+  → CONFLICTS (1 conflict(s)), 456ms
+
+14:31:02 query_decisions
+  Question: "Why did we choose FastAPI?"
+  → 234ms, 3 decision(s) matched
 ```
 
 ## CLI Reference
@@ -72,7 +94,9 @@ setkontext generate -f cursor  # Creates .cursorrules
 |---------|-------------|
 | `setkontext init owner/repo` | Full project setup (credentials + MCP + gitignore) |
 | `setkontext extract` | Extract decisions from GitHub |
+| `setkontext extract --include-sessions` | Also extract from Entire.io agent sessions |
 | `setkontext query "question"` | Ask a question about decisions |
+| `setkontext activity` | Show recent MCP tool calls and what context agents received |
 | `setkontext stats` | Show extraction statistics |
 | `setkontext generate` | Generate a static context file |
 | `setkontext serve` | Start MCP server (called automatically by Claude Code) |
@@ -82,6 +106,7 @@ setkontext generate -f cursor  # Creates .cursorrules
 - **ADRs** (Architecture Decision Records) — parsed deterministically from standard formats (Nygard, MADR)
 - **Documentation** — architecture docs, strategy docs, and other markdown files analyzed by Claude
 - **Pull Requests** — merged PRs analyzed for implicit engineering decisions
+- **Agent sessions** — Entire.io session transcripts analyzed for decisions made during AI-assisted coding (opt-in via `--include-sessions`)
 
 ## How it works
 
