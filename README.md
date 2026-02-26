@@ -98,7 +98,22 @@ setkontext recall "authentication bugs"
 setkontext recall "deployment" --category gotcha
 ```
 
-### 6. See what your agent received
+### 6. Explore with the web UI
+
+```bash
+setkontext ui
+```
+
+Opens a Streamlit dashboard at `http://localhost:8501` with:
+
+- **Chat** — conversational Q&A grounded in your decisions and learnings, with multi-turn follow-ups
+- **Context Spotlight** — describe a task, get ranked relevant decisions and learnings with relevance scores. Download a focused context file for your agent.
+- **Learnings** — browse, filter, and search session learnings. Add learnings manually.
+- **Decisions** — browse all extracted decisions with filtering by source type and entity
+- **Agent Activity** — timeline of MCP tool calls showing what context your agent received
+- **Setup** — configure credentials, run extraction, view stats
+
+### 7. See what your agent received
 
 After your agent has used setkontext tools, review what context it got:
 
@@ -133,6 +148,7 @@ Example output:
 | `setkontext activity` | Show recent MCP tool calls and what context agents received |
 | `setkontext stats` | Show extraction and learning statistics |
 | `setkontext generate` | Generate a static context file (includes learnings) |
+| `setkontext ui` | Launch the web dashboard (Chat, Spotlight, Learnings, Decisions, Activity) |
 | `setkontext serve` | Start MCP server (called automatically by Claude Code) |
 
 ## What gets extracted
@@ -164,11 +180,14 @@ Extract decisions (Claude)       Extract learnings (Claude)
     v                                    v
     +-----> SQLite + FTS5 <--------------+
                 |
-                v
-        MCP Server (6 tools)
-                |
-                v
-        AI Agent (Claude Code / Cursor)
+        +-------+-------+
+        |               |
+        v               v
+MCP Server          Web UI
+(6 tools)       (setkontext ui)
+        |               |
+        v               v
+AI Agent         Human explorer
 ```
 
 1. **Fetch** — pulls ADRs, docs, and PRs from your GitHub repository
