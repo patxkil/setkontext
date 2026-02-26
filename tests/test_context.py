@@ -27,7 +27,7 @@ class TestGenerateContextEmpty:
     def test_no_decisions(self):
         repo = _mock_repo()
         result = generate_context(repo)
-        assert "No engineering decisions extracted yet" in result
+        assert "No engineering decisions or learnings yet" in result
         assert "setkontext extract" in result
 
 

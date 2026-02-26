@@ -36,8 +36,9 @@ def generate_context(repo: Repository, format: str = "claude") -> str:
     entities = repo.get_entities()
     stats = repo.get_stats()
 
-    if not decisions:
-        return "# No engineering decisions extracted yet.\n\nRun `setkontext extract` first.\n"
+    has_learnings = stats.get("total_learnings", 0) > 0
+    if not decisions and not has_learnings:
+        return "# No engineering decisions or learnings yet.\n\nRun `setkontext extract` or `setkontext remember` first.\n"
 
     parts: list[str] = []
 
