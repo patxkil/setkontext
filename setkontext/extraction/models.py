@@ -34,3 +34,16 @@ class Decision:
     confidence: str = "medium"  # "high" | "medium" | "low"
     decision_date: str = ""  # ISO date string from PR merge or ADR
     extracted_at: datetime = field(default_factory=datetime.now)
+
+
+@dataclass
+class Learning:
+    id: str  # UUID
+    source_id: str  # FK to Source
+    category: str  # "bug_fix" | "gotcha" | "implementation"
+    summary: str  # One sentence: what happened
+    detail: str  # Full context: root cause, fix, what to know
+    components: list[str] = field(default_factory=list)  # Affected files/modules
+    entities: list[Entity] = field(default_factory=list)  # Technologies involved
+    session_date: str = ""  # When this happened
+    extracted_at: datetime = field(default_factory=datetime.now)

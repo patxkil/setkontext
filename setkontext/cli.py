@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import sys
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 import anthropic
@@ -15,6 +19,8 @@ from setkontext.context import generate_context_file
 from setkontext.extraction.adr import extract_adr_decisions
 from setkontext.entire.fetcher import EntireFetcher
 from setkontext.extraction.doc import extract_doc_decisions
+from setkontext.extraction.learning import extract_session_learnings
+from setkontext.extraction.models import Entity, Learning, Source
 from setkontext.extraction.pr import extract_pr_decisions
 from setkontext.extraction.session import extract_session_decisions
 from setkontext.github.client import GitHubClient
@@ -108,6 +114,59 @@ def _update_gitignore(project_dir: Path) -> None:
         rprint(f"Added {', '.join(new_entries)} to .gitignore")
 
 
+def _write_hooks_config(project_dir: Path) -> None:
+    """Create or update .claude/settings.local.json with SessionEnd hook."""
+    import json
+    import shutil
+
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+
+    settings_path = claude_dir / "settings.local.json"
+
+    # Load existing settings if present
+    existing: dict = {}
+    if settings_path.exists():
+        try:
+            existing = json.loads(settings_path.read_text())
+        except json.JSONDecodeError:
+            existing = {}
+
+    # Determine the capture command
+    setkontext_bin = shutil.which("setkontext")
+    db_path = str(project_dir / "setkontext.db")
+    if setkontext_bin:
+        capture_cmd = f"{setkontext_bin} capture --db-path {db_path}"
+    else:
+        source_dir = _find_setkontext_source_dir()
+        capture_cmd = f"uv run --directory {source_dir} setkontext capture --db-path {db_path}"
+
+    hook_entry = {
+        "type": "command",
+        "command": capture_cmd,
+    }
+
+    # Merge into existing hooks without overwriting other tools' hooks
+    hooks = existing.get("hooks", {})
+    session_end_hooks = hooks.get("SessionEnd", [])
+
+    # Check if we already have a setkontext capture hook
+    already_configured = any(
+        "setkontext capture" in h.get("command", "")
+        for h in session_end_hooks
+        if isinstance(h, dict)
+    )
+
+    if not already_configured:
+        session_end_hooks.append(hook_entry)
+        hooks["SessionEnd"] = session_end_hooks
+        existing["hooks"] = hooks
+        settings_path.write_text(json.dumps(existing, indent=2) + "\n")
+        rprint(f"Claude Code hook configured in {settings_path}")
+    else:
+        rprint(f"Claude Code hook already configured in {settings_path}")
+
+
 @app.command()
 def init(
     repo: str = typer.Argument(help="GitHub repository (owner/repo)"),
@@ -130,6 +189,7 @@ def init(
 
     _write_env(project_dir, repo, token, anthropic_key or "")
     _write_mcp_config(project_dir)
+    _write_hooks_config(project_dir)
     _update_gitignore(project_dir)
 
     rprint(f"\n[green bold]setkontext initialized for {repo}[/green bold]")
@@ -137,6 +197,7 @@ def init(
     rprint("  1. Run [bold]setkontext extract[/bold] to pull decisions from GitHub")
     rprint("  2. Restart Claude Code — it picks up the MCP server automatically")
     rprint("  3. Your agent now has setkontext tools for querying decisions")
+    rprint("  4. Session learnings are captured automatically at end of each session")
 
 
 @app.command()
@@ -375,6 +436,13 @@ def stats(
         if s.get("session_sources", 0) > 0:
             rprint(f"  Session sources: {s['session_sources']}")
 
+        if s.get("total_learnings", 0) > 0:
+            rprint(f"\n[bold]Learnings:[/bold]")
+            rprint(f"  Total:           {s['total_learnings']}")
+            rprint(f"  Bug fixes:       {s.get('bug_fixes', 0)}")
+            rprint(f"  Gotchas:         {s.get('gotchas', 0)}")
+            rprint(f"  Implementations: {s.get('implementations', 0)}")
+
         entities = repo_store.get_entities()
         if entities:
             rprint("\n[bold]Top entities:[/bold]")
@@ -432,9 +500,6 @@ def activity(
     Displays what context setkontext gave to AI agents, including queries,
     validation results, and which decisions were surfaced.
     """
-    import json as json_mod
-    from datetime import datetime
-
     path = Path(log_path) if log_path else None
     entries = read_activity_log(limit=limit, tool_name=tool, log_path=path)
 
@@ -446,7 +511,7 @@ def activity(
 
     if output_json:
         for entry in entries:
-            typer.echo(json_mod.dumps(entry, default=str))
+            typer.echo(json.dumps(entry, default=str))
         return
 
     rprint(f"[bold]Recent setkontext activity[/bold] ({len(entries)} entries)\n")
@@ -479,7 +544,7 @@ def activity(
 
 def _print_tool_summary(tool_name: str, args: dict, preview: str, duration: int) -> None:
     """Print a human-readable summary line for a tool call."""
-    import json as json_mod
+    import json as json
 
     if tool_name == "query_decisions":
         question = args.get("question", "")
@@ -524,35 +589,278 @@ def _print_tool_summary(tool_name: str, args: dict, preview: str, duration: int)
 
 def _count_decisions_in_preview(preview: str) -> int:
     """Try to count decisions from a result preview."""
-    import json as json_mod
+    import json as json
     try:
-        data = json_mod.loads(preview)
+        data = json.loads(preview)
         if isinstance(data.get("decisions"), list):
             return len(data["decisions"])
         return data.get("sources_searched", 0)
-    except (json_mod.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError):
         return 0
 
 
 def _extract_json_field(preview: str, field: str) -> str:
     """Try to extract a field from a JSON preview."""
-    import json as json_mod
+    import json as json
     try:
-        data = json_mod.loads(preview)
+        data = json.loads(preview)
         return str(data.get(field, ""))
-    except (json_mod.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError):
         return ""
 
 
 def _count_json_array(preview: str, field: str) -> int:
     """Try to count items in a JSON array field."""
-    import json as json_mod
+    import json as json
     try:
-        data = json_mod.loads(preview)
+        data = json.loads(preview)
         arr = data.get(field, [])
         return len(arr) if isinstance(arr, list) else 0
-    except (json_mod.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError):
         return 0
+
+
+@app.command()
+def capture(
+    db_path: str = typer.Option("setkontext.db", help="Database file path"),
+    repo: str = typer.Option(None, help="Repository name (reads from .env if not set)"),
+) -> None:
+    """Capture learnings from a session transcript (reads from stdin).
+
+    Called automatically by the Claude Code SessionEnd hook.
+    Reads a session transcript from stdin and extracts bugs, gotchas,
+    and implementations using Claude.
+    """
+    config = Config.load()
+    repo_name = repo or config.repo
+
+    if not config.anthropic_api_key:
+        print("No ANTHROPIC_API_KEY set, skipping learning capture.", file=sys.stderr)
+        raise typer.Exit(0)
+
+    if not repo_name:
+        print("No repo configured. Run 'setkontext init' first.", file=sys.stderr)
+        raise typer.Exit(1)
+
+    # Read transcript from stdin
+    if sys.stdin.isatty():
+        print("No transcript on stdin. Pipe a session transcript to this command.", file=sys.stderr)
+        raise typer.Exit(0)
+
+    transcript = sys.stdin.read()
+    if not transcript.strip():
+        raise typer.Exit(0)
+
+    # Try to parse as JSON to extract metadata
+    session_metadata: dict = {}
+    try:
+        data = json.loads(transcript)
+        if isinstance(data, dict):
+            session_metadata = {
+                "session_id": data.get("session_id", ""),
+                "agent": data.get("agent", "claude-code"),
+                "branch": data.get("branch", ""),
+                "prompt": data.get("prompt", ""),
+                "summary": data.get("summary", ""),
+                "files_touched": data.get("files_touched", []),
+            }
+            # Use transcript field if present, otherwise use the full text
+            transcript = data.get("transcript", transcript)
+            if isinstance(transcript, list):
+                # JSONL-style transcript — flatten to text
+                parts = []
+                for entry in transcript:
+                    if isinstance(entry, dict):
+                        role = entry.get("role", entry.get("type", ""))
+                        content = entry.get("content", entry.get("message", ""))
+                        if isinstance(content, str) and content:
+                            parts.append(f"**{role}:** {content[:500]}")
+                    elif isinstance(entry, str):
+                        parts.append(entry)
+                transcript = "\n\n".join(parts)
+    except (json.JSONDecodeError, TypeError):
+        pass  # Not JSON, use raw text
+
+    db = Path(db_path)
+    conn = get_connection(db)
+    repo_store = Repository(conn)
+
+    try:
+        anthropic_client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+        source, learnings = extract_session_learnings(
+            transcript=transcript if isinstance(transcript, str) else str(transcript),
+            repo=repo_name,
+            client=anthropic_client,
+            session_metadata=session_metadata,
+        )
+        repo_store.save_learning_result(source, learnings)
+
+        if learnings:
+            categories: dict[str, int] = {}
+            for l in learnings:
+                categories[l.category] = categories.get(l.category, 0) + 1
+            parts = [f"{count} {cat.replace('_', ' ')}(s)" for cat, count in categories.items()]
+            print(f"Captured {len(learnings)} learnings: {', '.join(parts)}", file=sys.stderr)
+        else:
+            print("No learnings extracted from this session.", file=sys.stderr)
+    finally:
+        conn.close()
+
+
+@app.command()
+def remember(
+    category: str = typer.Option(
+        ..., "--category", "-c",
+        help="Learning type: bug_fix, gotcha, or implementation",
+    ),
+    summary: str = typer.Option(
+        ..., "--summary", "-s",
+        help="One-sentence summary of the learning",
+    ),
+    db_path: str = typer.Option("setkontext.db", help="Database file path"),
+) -> None:
+    """Manually save a learning. Reads detail from stdin if piped.
+
+    Examples:
+        setkontext remember -c bug_fix -s "Race condition in session cleanup"
+        echo "The root cause was..." | setkontext remember -c gotcha -s "Token refresh timing"
+    """
+    valid_categories = {"bug_fix", "gotcha", "implementation"}
+    if category not in valid_categories:
+        rprint(f"[red]Invalid category: {category}. Must be one of: {', '.join(valid_categories)}[/red]")
+        raise typer.Exit(1)
+
+    # Read detail from stdin if piped
+    detail = ""
+    if not sys.stdin.isatty():
+        detail = sys.stdin.read().strip()
+
+    config = Config.load()
+    repo_name = config.repo or "local"
+
+    db = Path(db_path)
+    conn = get_connection(db)
+    repo_store = Repository(conn)
+
+    try:
+        source_id = f"learning:manual-{uuid.uuid4().hex[:8]}"
+
+        source = Source(
+            id=source_id,
+            source_type="learning",
+            repo=repo_name,
+            url="",
+            title=f"[manual] {summary[:80]}",
+            raw_content=detail or summary,
+            fetched_at=datetime.now(),
+        )
+
+        learning = Learning(
+            id=str(uuid.uuid4()),
+            source_id=source_id,
+            category=category,
+            summary=summary,
+            detail=detail,
+            components=[],
+            entities=[],
+            session_date=datetime.now().strftime("%Y-%m-%d"),
+            extracted_at=datetime.now(),
+        )
+
+        repo_store.save_learning_result(source, [learning])
+
+        category_label = category.replace("_", " ")
+        rprint(f"[green]Saved {category_label}:[/green] {summary}")
+    finally:
+        conn.close()
+
+
+@app.command()
+def recall(
+    query: str = typer.Argument(help="What to search for"),
+    category: str = typer.Option(
+        None, "--category", "-c",
+        help="Filter: bug_fix, gotcha, implementation",
+    ),
+    limit: int = typer.Option(10, help="Max results"),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: text or json"),
+    db_path: str = typer.Option("setkontext.db", help="Database file path"),
+) -> None:
+    """Search past learnings — bugs, gotchas, and implementations."""
+    import json as json
+
+    db = Path(db_path)
+    if not db.exists():
+        rprint(f"[red]Database not found at {db}. Run 'setkontext extract' or 'setkontext remember' first.[/red]")
+        raise typer.Exit(1)
+
+    conn = get_connection(db)
+    repo_store = Repository(conn)
+
+    try:
+        # Build FTS query
+        stop_words = {
+            "why", "did", "we", "the", "a", "an", "is", "are", "was", "were",
+            "do", "does", "how", "what", "when", "where", "which", "who",
+            "should", "would", "could", "have", "has", "had", "not", "and",
+            "or", "but", "in", "on", "to", "of", "it", "be",
+        }
+        words = []
+        for word in query.lower().split():
+            cleaned = "".join(c for c in word if c.isalnum())
+            if cleaned and cleaned not in stop_words and len(cleaned) > 2:
+                words.append(cleaned)
+
+        fts_query = " OR ".join(words) if words else query
+        learnings = repo_store.search_learnings(fts_query, category=category, limit=limit)
+
+        # Fall back to recent if no FTS results
+        if not learnings:
+            learnings = repo_store.get_recent_learnings(limit=limit, category=category)
+
+        if not learnings:
+            rprint("[yellow]No learnings found.[/yellow]")
+            rprint("Use 'setkontext remember' to save learnings, or sessions will be captured automatically.")
+            raise typer.Exit(0)
+
+        if format == "json":
+            typer.echo(json.dumps(learnings, indent=2, default=str))
+            return
+
+        rprint(f"[bold]Found {len(learnings)} learning(s)[/bold]\n")
+
+        category_colors = {
+            "bug_fix": "red",
+            "gotcha": "yellow",
+            "implementation": "green",
+        }
+        category_labels = {
+            "bug_fix": "BUG FIX",
+            "gotcha": "GOTCHA",
+            "implementation": "IMPLEMENTATION",
+        }
+
+        for l in learnings:
+            cat = l.get("category", "unknown")
+            color = category_colors.get(cat, "white")
+            label = category_labels.get(cat, cat.upper())
+
+            rprint(f"[{color} bold][{label}][/{color} bold] {l.get('summary', '')}")
+            if l.get("detail"):
+                detail = l["detail"]
+                if len(detail) > 200:
+                    detail = detail[:197] + "..."
+                rprint(f"  {detail}")
+            if l.get("components"):
+                comps = l["components"]
+                if isinstance(comps, list):
+                    rprint(f"  [dim]Components: {', '.join(comps)}[/dim]")
+            if l.get("session_date"):
+                rprint(f"  [dim]Date: {l['session_date']}[/dim]")
+            rprint("")
+
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

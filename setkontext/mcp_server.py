@@ -164,6 +164,30 @@ async def list_tools() -> list[types.Tool]:
                 "properties": {},
             },
         ),
+        types.Tool(
+            name="recall_learnings",
+            description=(
+                "Search past session learnings — bugs solved, gotchas discovered, "
+                "and features implemented. Use this before working in an area to "
+                "avoid known pitfalls and leverage past solutions. "
+                "Examples: 'authentication bugs', 'deployment gotchas', 'caching implementation'"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "What to search for",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["bug_fix", "gotcha", "implementation"],
+                        "description": "Optional: filter by learning type",
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
     ]
 
 
@@ -204,6 +228,11 @@ def _dispatch_tool(name: str, arguments: dict) -> list[types.TextContent]:
         return _handle_full_context()
     elif name == "list_entities":
         return _handle_list_entities()
+    elif name == "recall_learnings":
+        return _handle_recall_learnings(
+            arguments["query"],
+            arguments.get("category"),
+        )
     else:
         return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
 
@@ -291,6 +320,58 @@ def _handle_list_entities() -> list[types.TextContent]:
         "entities": entities,
     }
     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+
+def _handle_recall_learnings(
+    query: str, category: str | None
+) -> list[types.TextContent]:
+    repo = _get_repo()
+
+    # Build FTS query (reuse same stop-word logic as QueryEngine)
+    stop_words = {
+        "why", "did", "we", "the", "a", "an", "is", "are", "was", "were",
+        "do", "does", "how", "what", "when", "where", "which", "who",
+        "our", "their", "this", "that", "for", "with", "from", "about",
+        "use", "using", "used", "should", "would", "could",
+        "have", "has", "had", "not", "and", "or", "but", "in", "on",
+        "to", "of", "it", "its", "be", "been", "being",
+    }
+    words = []
+    for word in query.lower().split():
+        cleaned = "".join(c for c in word if c.isalnum())
+        if cleaned and cleaned not in stop_words and len(cleaned) > 2:
+            words.append(cleaned)
+
+    fts_query = " OR ".join(words) if words else query
+
+    learnings = repo.search_learnings(fts_query, category=category, limit=15)
+
+    # Also try entity matching
+    if len(learnings) < 5:
+        seen_ids = {l["id"] for l in learnings}
+        all_entities = repo.get_entities()
+        query_lower = query.lower()
+        for e in all_entities:
+            if e["entity"] in query_lower:
+                for l in repo.get_learnings_by_entity(e["entity"]):
+                    if l["id"] not in seen_ids:
+                        seen_ids.add(l["id"])
+                        learnings.append(l)
+
+    # Fall back to recent learnings if nothing found
+    if not learnings:
+        learnings = repo.get_recent_learnings(limit=10, category=category)
+
+    if not learnings:
+        return [types.TextContent(type="text", text="No learnings found. Sessions haven't been captured yet.")]
+
+    result = {
+        "query": query,
+        "category_filter": category,
+        "count": len(learnings),
+        "learnings": learnings,
+    }
+    return [types.TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
 
 async def main() -> None:

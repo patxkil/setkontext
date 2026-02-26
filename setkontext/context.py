@@ -68,14 +68,29 @@ def generate_context(repo: Repository, format: str = "claude") -> str:
         for d in medium_conf:
             parts.append(_format_decision(d))
 
+    # Learnings section
+    learnings_section = _build_learnings_section(repo)
+    if learnings_section:
+        parts.append(SECTION_SEPARATOR)
+        parts.append(learnings_section)
+
     # Footer with stats
     parts.append(SECTION_SEPARATOR)
-    parts.append(
+    footer_parts = [
         f"*Generated from {stats['total_sources']} sources "
         f"({stats.get('doc_sources', 0)} docs, {stats['adr_sources']} ADRs, "
         f"{stats['pr_sources']} PRs). "
-        f"{stats['total_decisions']} decisions, {stats['unique_entities']} entities.*\n"
-    )
+        f"{stats['total_decisions']} decisions, {stats['unique_entities']} entities."
+    ]
+    if stats.get("total_learnings", 0) > 0:
+        footer_parts.append(
+            f" {stats['total_learnings']} learnings "
+            f"({stats.get('bug_fixes', 0)} bug fixes, "
+            f"{stats.get('gotchas', 0)} gotchas, "
+            f"{stats.get('implementations', 0)} implementations)."
+        )
+    footer_parts.append("*\n")
+    parts.append("".join(footer_parts))
 
     return "".join(parts)
 
@@ -115,6 +130,56 @@ def _build_tech_stack_section(entities: list[dict]) -> str:
         pattern_names = [e["entity"] for e in patterns[:10]]
         parts.append(f"**Patterns:** {', '.join(pattern_names)}\n\n")
 
+    return "".join(parts)
+
+
+def _build_learnings_section(repo: Repository) -> str:
+    """Build a learnings section grouped by category."""
+    bug_fixes = repo.get_recent_learnings(limit=10, category="bug_fix")
+    gotchas = repo.get_recent_learnings(limit=10, category="gotcha")
+    implementations = repo.get_recent_learnings(limit=10, category="implementation")
+
+    if not bug_fixes and not gotchas and not implementations:
+        return ""
+
+    parts: list[str] = ["## Team Learnings\n\n"]
+    parts.append("Knowledge captured from past coding sessions.\n\n")
+
+    if bug_fixes:
+        parts.append("### Known Bugs & Fixes\n\n")
+        for l in bug_fixes:
+            parts.append(_format_learning(l))
+
+    if gotchas:
+        parts.append("### Gotchas\n\n")
+        for l in gotchas:
+            parts.append(_format_learning(l))
+
+    if implementations:
+        parts.append("### Recent Implementations\n\n")
+        for l in implementations:
+            parts.append(_format_learning(l))
+
+    return "".join(parts)
+
+
+def _format_learning(l: dict) -> str:
+    """Format a single learning for the context file."""
+    parts: list[str] = []
+    parts.append(f"- **{l.get('summary', 'Untitled')}**")
+
+    if l.get("detail"):
+        detail = l["detail"]
+        if len(detail) > 200:
+            detail = detail[:197] + "..."
+        parts.append(f"\n  {detail}")
+
+    if l.get("components"):
+        comps = l["components"]
+        if isinstance(comps, list) and comps:
+            parts.append(f"\n  *Components:* {', '.join(comps)}")
+
+    parts.append("\n\n")
     return "".join(parts)
 
 

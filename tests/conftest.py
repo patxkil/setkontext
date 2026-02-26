@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from setkontext.extraction.models import Decision, Entity, Source
+from setkontext.extraction.models import Decision, Entity, Learning, Source
 from setkontext.storage.db import get_connection
 from setkontext.storage.repository import Repository
 
@@ -86,6 +86,52 @@ def sample_adr_decision() -> tuple[Source, Decision]:
         extracted_at=datetime(2024, 3, 1, 12, 0, 0),
     )
     return source, decision
+
+
+@pytest.fixture
+def sample_learning_source() -> Source:
+    return Source(
+        id="learning:session-abc123",
+        source_type="learning",
+        repo="acme/webapp",
+        url="",
+        title="[claude-code] Fix auth session timeout",
+        raw_content="Fixed a bug where sessions were timing out prematurely.",
+        fetched_at=datetime(2024, 8, 10, 14, 0, 0),
+    )
+
+
+@pytest.fixture
+def sample_learning(sample_learning_source: Source) -> Learning:
+    return Learning(
+        id=str(uuid.uuid4()),
+        source_id=sample_learning_source.id,
+        category="bug_fix",
+        summary="Fixed session timeout caused by incorrect TTL calculation",
+        detail="The TTL was calculated in seconds but compared against milliseconds. Changed comparison in auth/session.py to use consistent units.",
+        components=["auth/session.py", "auth/middleware.py"],
+        entities=[
+            Entity(name="jwt", entity_type="technology"),
+            Entity(name="redis", entity_type="technology"),
+        ],
+        session_date="2024-08-10",
+        extracted_at=datetime(2024, 8, 10, 14, 30, 0),
+    )
+
+
+@pytest.fixture
+def sample_gotcha() -> Learning:
+    return Learning(
+        id=str(uuid.uuid4()),
+        source_id="learning:session-def456",
+        category="gotcha",
+        summary="PostgreSQL JSONB indexes require explicit operator class",
+        detail="Creating a GIN index on a JSONB column without specifying jsonb_path_ops results in much larger indexes. Always use CREATE INDEX idx ON table USING gin (column jsonb_path_ops).",
+        components=["migrations/003_add_metadata.sql"],
+        entities=[Entity(name="postgresql", entity_type="technology")],
+        session_date="2024-08-12",
+        extracted_at=datetime(2024, 8, 12, 10, 0, 0),
+    )
 
 
 @pytest.fixture
