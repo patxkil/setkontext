@@ -20,21 +20,7 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2.0  # seconds
 
-SYNTHESIS_PROMPT = """\
-You are a senior engineering advisor for a software team. You have access to the team's \
-documented engineering decisions extracted from their codebase, PRs, ADRs, and documentation.
-
-Your job is to answer questions in a way that helps the person (or AI agent) make the \
-RIGHT implementation choice — one that's consistent with the team's existing decisions.
-
-## Question
-{question}
-
-## Team's Engineering Decisions
-{decisions_text}
-
-## Instructions
-
+_INSTRUCTIONS_BLOCK = """\
 Determine the type of question and respond accordingly:
 
 **If it's a "why" question** (why did we choose X?):
@@ -56,6 +42,45 @@ Determine the type of question and respond accordingly:
 - If decisions don't cover the topic, say so clearly — don't make up guidance
 - If decisions contradict each other, note the conflict and which is more recent
 """
+
+SYNTHESIS_PROMPT = """\
+You are a senior engineering advisor for a software team. You have access to the team's \
+documented engineering decisions extracted from their codebase, PRs, ADRs, and documentation.
+
+Your job is to answer questions in a way that helps the person (or AI agent) make the \
+RIGHT implementation choice — one that's consistent with the team's existing decisions.
+
+## Question
+{question}
+
+## Team's Engineering Decisions
+{decisions_text}
+
+## Instructions
+
+""" + _INSTRUCTIONS_BLOCK
+
+CHAT_SYNTHESIS_PROMPT = """\
+You are a senior engineering advisor for a software team. You have access to the team's \
+documented engineering decisions extracted from their codebase, PRs, ADRs, and documentation.
+
+Your job is to answer questions in a conversational manner, helping the person make the \
+RIGHT implementation choice — one that's consistent with the team's existing decisions.
+
+## Conversation History
+{history_text}
+
+## Current Question
+{question}
+
+## Team's Engineering Decisions
+{decisions_text}
+
+## Instructions
+
+Continue the conversation naturally. Reference previous turns if relevant.
+
+""" + _INSTRUCTIONS_BLOCK
 
 
 @dataclass
@@ -113,6 +138,84 @@ class QueryEngine:
             decisions=decisions,
             sources_searched=len(decisions),
         )
+
+    def chat(self, question: str, history: list[dict]) -> QueryResult:
+        """Answer a question with conversation context.
+
+        Args:
+            question: The current user question.
+            history: Previous messages as [{"role": "user"|"assistant", "content": str}, ...].
+        """
+        decisions = self._find_relevant_decisions(question)
+
+        if not decisions:
+            return QueryResult(
+                question=question,
+                answer="No relevant engineering decisions found for this question. "
+                "The repository may not have decisions related to this topic, "
+                "or extraction hasn't been run yet.",
+                decisions=[],
+                sources_searched=0,
+            )
+
+        history_text = self._format_history(history)
+        answer = self._synthesize_chat_answer(question, history_text, decisions)
+
+        return QueryResult(
+            question=question,
+            answer=answer,
+            decisions=decisions,
+            sources_searched=len(decisions),
+        )
+
+    def _format_history(self, history: list[dict]) -> str:
+        """Format conversation history for the prompt."""
+        if not history:
+            return "(No previous conversation)"
+        parts = []
+        for msg in history[-10:]:  # Last 10 turns to stay within context limits
+            role = "User" if msg["role"] == "user" else "Assistant"
+            content = msg["content"]
+            if len(content) > 500:
+                content = content[:497] + "..."
+            parts.append(f"**{role}:** {content}")
+        return "\n\n".join(parts)
+
+    def _synthesize_chat_answer(
+        self, question: str, history_text: str, decisions: list[dict]
+    ) -> str:
+        """Synthesize a conversational answer with history context."""
+        decisions_text = self._format_decisions_for_prompt(decisions)
+
+        prompt = CHAT_SYNTHESIS_PROMPT.format(
+            question=question,
+            history_text=history_text,
+            decisions_text=decisions_text,
+        )
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = self._client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=1024,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                break
+            except anthropic.RateLimitError:
+                if attempt < MAX_RETRIES - 1:
+                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                    logger.warning(f"Rate limited on chat, retrying in {delay}s...")
+                    time.sleep(delay)
+                else:
+                    return "Unable to synthesize answer: API rate limit exceeded. Try again later."
+            except anthropic.APIError as e:
+                logger.error(f"API error during chat synthesis: {e}")
+                return f"Unable to synthesize answer due to an API error: {e}"
+
+        if not response.content:
+            return "No response from API."
+
+        return response.content[0].text.strip()
 
     def _find_relevant_decisions(self, question: str) -> list[dict]:
         """Find decisions relevant to the question using FTS and entity matching."""

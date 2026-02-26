@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import uuid
 from datetime import datetime
@@ -618,6 +619,33 @@ def _count_json_array(preview: str, field: str) -> int:
         return len(arr) if isinstance(arr, list) else 0
     except (json.JSONDecodeError, TypeError):
         return 0
+
+
+@app.command()
+def ui(
+    port: int = typer.Option(8501, help="Port to serve on"),
+    db_path: str = typer.Option("setkontext.db", help="Database file path"),
+) -> None:
+    """Launch the setkontext web UI.
+
+    Opens an interactive dashboard for browsing decisions, learnings,
+    and chatting with your engineering context.
+    """
+    import subprocess
+
+    env = {
+        **os.environ,
+        "SETKONTEXT_DB_PATH": str(Path(db_path).resolve()),
+    }
+
+    ui_module = Path(__file__).parent / "ui" / "app.py"
+    rprint(f"[bold]Starting setkontext UI on port {port}...[/bold]")
+    subprocess.run(
+        [sys.executable, "-m", "streamlit", "run", str(ui_module),
+         "--server.port", str(port),
+         "--server.headless", "true"],
+        env=env,
+    )
 
 
 @app.command()

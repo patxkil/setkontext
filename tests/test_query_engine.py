@@ -113,3 +113,78 @@ class TestQueryNoDecisions:
         result = engine.query("Something with no matches")
         assert "No relevant engineering decisions" in result.answer
         assert result.decisions == []
+
+
+class TestChat:
+    def test_chat_no_decisions(self):
+        repo_mock = MagicMock()
+        repo_mock.search_decisions.return_value = []
+        repo_mock.get_entities.return_value = []
+        repo_mock.get_all_decisions.return_value = []
+
+        engine = QueryEngine(repo_mock, MagicMock())
+        result = engine.chat("Something with no matches", [])
+        assert "No relevant engineering decisions" in result.answer
+        assert result.decisions == []
+
+    def test_chat_with_history(self):
+        decision = {
+            "id": "1", "summary": "Use FastAPI", "reasoning": "Async",
+            "confidence": "high", "source_url": "", "source_type": "pr",
+            "alternatives": [], "entities": [],
+        }
+        repo_mock = MagicMock()
+        # FTS query for "Why did we choose it?" strips to empty,
+        # so it falls through to get_all_decisions
+        repo_mock.search_decisions.return_value = []
+        repo_mock.get_entities.return_value = []
+        repo_mock.get_all_decisions.return_value = [decision]
+
+        mock_response = MagicMock()
+        content_block = MagicMock()
+        content_block.text = "FastAPI was chosen for async support."
+        mock_response.content = [content_block]
+
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_response
+
+        engine = QueryEngine(repo_mock, mock_client)
+        history = [
+            {"role": "user", "content": "What framework do we use?"},
+            {"role": "assistant", "content": "We use FastAPI."},
+        ]
+        result = engine.chat("Why did we choose it?", history)
+
+        assert result.answer == "FastAPI was chosen for async support."
+        assert len(result.decisions) == 1
+
+        # Verify the prompt includes history
+        call_args = mock_client.messages.create.call_args
+        prompt_text = call_args.kwargs["messages"][0]["content"]
+        assert "What framework do we use?" in prompt_text
+        assert "Conversation History" in prompt_text
+
+    def test_format_history_empty(self):
+        engine = QueryEngine.__new__(QueryEngine)
+        engine._repo = MagicMock()
+        engine._client = None
+        assert engine._format_history([]) == "(No previous conversation)"
+
+    def test_format_history_truncates_long_messages(self):
+        engine = QueryEngine.__new__(QueryEngine)
+        engine._repo = MagicMock()
+        engine._client = None
+        history = [{"role": "user", "content": "x" * 1000}]
+        result = engine._format_history(history)
+        assert "..." in result
+        assert len(result) < 600
+
+    def test_format_history_limits_to_10_turns(self):
+        engine = QueryEngine.__new__(QueryEngine)
+        engine._repo = MagicMock()
+        engine._client = None
+        history = [{"role": "user", "content": f"Message {i}"} for i in range(20)]
+        result = engine._format_history(history)
+        # Should only include messages 10-19
+        assert "Message 10" in result
+        assert "Message 0" not in result
