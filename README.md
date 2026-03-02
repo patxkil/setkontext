@@ -140,7 +140,7 @@ Example output:
 |---------|-------------|
 | `setkontext init owner/repo` | Full project setup (credentials + MCP + hooks + gitignore) |
 | `setkontext extract` | Extract decisions from GitHub |
-| `setkontext extract --include-sessions` | Also extract from Entire.io agent sessions |
+| `setkontext extract --include-sessions` | Also extract decisions from Entire.io session history (optional) |
 | `setkontext query "question"` | Ask a question about decisions |
 | `setkontext remember -c category -s "summary"` | Manually save a learning (bug_fix, gotcha, implementation) |
 | `setkontext recall "query"` | Search past learnings |
@@ -157,14 +157,16 @@ Example output:
 - **ADRs** (Architecture Decision Records) — parsed deterministically from standard formats (Nygard, MADR)
 - **Documentation** — architecture docs, strategy docs, and other markdown files analyzed by Claude
 - **Pull Requests** — merged PRs analyzed for implicit engineering decisions
-- **Agent sessions** — Entire.io session transcripts analyzed for decisions made during AI-assisted coding (opt-in via `--include-sessions`)
 
 ### Learnings (from coding sessions)
 - **Bug fixes** — what was wrong, root cause, how it was fixed, affected components
 - **Gotchas** — non-obvious pitfalls, surprising behavior, workarounds
 - **Implementations** — features built, key design choices, how they work
 
-Learnings are captured automatically at the end of each Claude Code session, or saved manually with `setkontext remember`.
+Learnings are captured automatically from AI coding session transcripts (Claude Code, Cursor, or any agent that can pipe transcripts to stdin). Claude Code sessions are captured automatically via a `SessionEnd` hook configured during `init`. You can also save learnings manually with `setkontext remember`.
+
+### Entire.io integration (optional)
+If you use [Entire.io](https://entire.io), `setkontext extract --include-sessions` can retroactively mine historical session transcripts stored on Entire.io's git shadow branch for engineering **decisions** (technology choices, architectural patterns). This is separate from the real-time learning capture above.
 
 ## How it works
 
@@ -172,7 +174,7 @@ Learnings are captured automatically at the end of each Claude Code session, or 
 GitHub Repository                AI Coding Sessions
     |                                    |
     v                                    v
-Fetch (ADRs, docs, PRs)         SessionEnd hook / manual save
+Fetch (ADRs, docs, PRs)         SessionEnd hook / capture / manual save
     |                                    |
     v                                    v
 Extract decisions (Claude)       Extract learnings (Claude)
@@ -191,15 +193,16 @@ AI Agent         Human explorer
 ```
 
 1. **Fetch** — pulls ADRs, docs, and PRs from your GitHub repository
-2. **Extract** — Claude identifies decisions (reasoning, alternatives, technologies) and learnings (bugs, gotchas, implementations)
-3. **Store** — everything goes into a local SQLite database with full-text search (FTS5)
-4. **Query** — MCP server or CLI lets you (or your AI agent) ask questions grounded in your team's actual decisions and learnings
+2. **Capture** — session transcripts are captured automatically (via Claude Code hook) or manually (`setkontext remember`)
+3. **Extract** — Claude identifies decisions (reasoning, alternatives, technologies) and learnings (bugs, gotchas, implementations)
+4. **Store** — everything goes into a local SQLite database with full-text search (FTS5)
+5. **Query** — MCP server or CLI lets you (or your AI agent) ask questions grounded in your team's actual decisions and learnings
 
 ## Early Alpha
 
 This is v0.1.0. Expect rough edges. Known limitations:
 - Only GitHub repositories (no GitLab/Bitbucket yet)
-- Session capture hooks work with Claude Code only (Cursor support planned)
+- Automatic session capture hooks are configured for Claude Code (`SessionEnd` hook). Other agents can use `setkontext capture` by piping transcripts to stdin.
 - Extraction and queries use the Anthropic API — you need your own API key
 - No incremental extraction yet (re-running extract processes everything again, but merges results)
 

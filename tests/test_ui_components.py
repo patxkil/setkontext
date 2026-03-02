@@ -7,33 +7,45 @@ from setkontext.ui.components import build_fts_query, category_badge, confidence
 
 class TestConfidenceBadge:
     def test_high(self):
-        assert "\U0001f7e2" in confidence_badge("high")
+        badge = confidence_badge("high")
+        assert "sk-badge-high" in badge
+        assert "HIGH" in badge
 
     def test_medium(self):
-        assert "\U0001f7e1" in confidence_badge("medium")
+        badge = confidence_badge("medium")
+        assert "sk-badge-medium" in badge
+        assert "MEDIUM" in badge
 
     def test_low(self):
-        assert "\U0001f534" in confidence_badge("low")
+        badge = confidence_badge("low")
+        assert "sk-badge-low" in badge
+        assert "LOW" in badge
 
     def test_unknown(self):
-        assert "\u26aa" in confidence_badge("unknown")
+        badge = confidence_badge("unknown")
+        assert "sk-badge-low" in badge
+        assert "UNKNOWN" in badge
 
 
 class TestCategoryBadge:
     def test_bug_fix(self):
         badge = category_badge("bug_fix")
-        assert "BUG FIX" in badge
+        assert "sk-badge-bug-fix" in badge
+        assert "Bug Fix" in badge
 
     def test_gotcha(self):
         badge = category_badge("gotcha")
-        assert "GOTCHA" in badge
+        assert "sk-badge-gotcha" in badge
+        assert "Gotcha" in badge
 
     def test_implementation(self):
         badge = category_badge("implementation")
-        assert "IMPLEMENTATION" in badge
+        assert "sk-badge-implementation" in badge
+        assert "Implementation" in badge
 
     def test_unknown(self):
         badge = category_badge("unknown_cat")
+        assert "sk-badge-implementation" in badge
         assert "UNKNOWN_CAT" in badge
 
 

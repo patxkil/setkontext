@@ -1,12 +1,9 @@
-"""Streamlit UI for setkontext.
+"""Streamlit UI for setkontext -- chat-first experience.
 
-Six views:
-1. Chat — conversational Q&A grounded in decisions + learnings
-2. Context Spotlight — task-scoped relevance ranking
-3. Learnings — browse and manage session learnings
-4. Decisions — browse extracted decisions
-5. Agent Activity — MCP tool call timeline
-6. Setup — connect repo, trigger extraction, see progress
+Three modes:
+1. Chat -- conversational Q&A with inline ranked context
+2. Browse -- unified decisions + learnings search
+3. Settings -- configuration, extraction, activity log
 """
 
 from __future__ import annotations
@@ -16,6 +13,7 @@ import streamlit as st
 from setkontext.config import Config
 from setkontext.storage.db import get_connection
 from setkontext.storage.repository import Repository
+from setkontext.ui.styles import inject_custom_css
 
 
 @st.cache_resource
@@ -29,27 +27,32 @@ def get_repo() -> Repository:
 
 
 def main() -> None:
-    st.set_page_config(page_title="setkontext", page_icon="\U0001f50d", layout="wide")
-    st.title("setkontext")
-    st.caption("Engineering decisions & session learnings from your codebase")
-
-    page = st.sidebar.radio(
-        "Navigate",
-        ["Chat", "Context Spotlight", "Learnings", "Decisions", "Agent Activity", "Setup"],
+    st.set_page_config(
+        page_title="setkontext",
+        page_icon="SK",
+        layout="centered",
+        initial_sidebar_state="collapsed",
     )
 
-    if page == "Chat":
-        from setkontext.ui.page_chat import render
-    elif page == "Context Spotlight":
-        from setkontext.ui.page_spotlight import render
-    elif page == "Learnings":
-        from setkontext.ui.page_learnings import render
-    elif page == "Decisions":
-        from setkontext.ui.page_decisions import render
-    elif page == "Agent Activity":
-        from setkontext.ui.page_activity import render
-    elif page == "Setup":
-        from setkontext.ui.page_setup import render
+    # Inject all custom CSS (warm background, badges, cards, hide sidebar)
+    inject_custom_css()
+
+    # Mode selector -- horizontal segmented control at top
+    mode = st.segmented_control(
+        "mode",
+        options=["Chat", "Browse", "Settings"],
+        default="Chat",
+        key="app_mode",
+        label_visibility="collapsed",
+    )
+
+    # Route to mode
+    if mode == "Browse":
+        from setkontext.ui.mode_browse import render
+    elif mode == "Settings":
+        from setkontext.ui.mode_settings import render
+    else:
+        from setkontext.ui.mode_chat import render
 
     render(get_repo)
 
