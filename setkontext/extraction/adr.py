@@ -13,7 +13,7 @@ import re
 import uuid
 from datetime import datetime
 
-from setkontext.extraction.models import Decision, Entity, Source
+from setkontext.extraction.models import Decision, Entity, EntityRelationship, Source
 from setkontext.github.fetcher import ADRData
 
 # Patterns for section headings in ADR files
@@ -36,10 +36,12 @@ SECTION_PATTERNS: dict[str, list[re.Pattern[str]]] = {
 }
 
 
-def extract_adr_decisions(adr: ADRData, repo: str) -> tuple[Source, list[Decision]]:
+def extract_adr_decisions(
+    adr: ADRData, repo: str
+) -> tuple[Source, list[Decision], list[EntityRelationship]]:
     """Parse an ADR file and extract decisions.
 
-    Returns a Source and list of Decisions (usually 0 or 1).
+    Returns a Source, list of Decisions (usually 0 or 1), and inferred EntityRelationships.
     """
     source = Source(
         id=f"adr:{adr.path}",
@@ -55,7 +57,7 @@ def extract_adr_decisions(adr: ADRData, repo: str) -> tuple[Source, list[Decisio
 
     # Need at least a decision or context section to extract anything useful
     if not sections.get("decision") and not sections.get("context"):
-        return source, []
+        return source, [], []
 
     summary = _build_summary(sections, source.title)
     reasoning = sections.get("context", "")
@@ -77,7 +79,10 @@ def extract_adr_decisions(adr: ADRData, repo: str) -> tuple[Source, list[Decisio
         extracted_at=datetime.now(),
     )
 
-    return source, [decision]
+    # Infer "replaces" relationships from chosen entity vs alternative entities
+    relationships = _infer_relationships(entities, alternatives, source.id)
+
+    return source, [decision], relationships
 
 
 def _extract_title(content: str) -> str:
@@ -216,6 +221,41 @@ def _assess_confidence(sections: dict[str, str]) -> str:
     if has_decision or has_context:
         return "medium"
     return "low"
+
+
+def _infer_relationships(
+    chosen_entities: list[Entity],
+    alternatives: list[str],
+    source_id: str,
+) -> list[EntityRelationship]:
+    """Infer entity relationships from ADR structure.
+
+    If an ADR chose X and considered Y as an alternative, that's 'X replaces Y'.
+    """
+    if not chosen_entities or not alternatives:
+        return []
+
+    # Extract entities from alternatives text
+    alt_text = " ".join(alternatives)
+    alt_entities = _extract_entities_from_text(alt_text)
+    chosen_names = {e.name.lower() for e in chosen_entities}
+    alt_names = {e.name.lower() for e in alt_entities}
+
+    relationships: list[EntityRelationship] = []
+    for chosen in chosen_names:
+        for alt in alt_names:
+            if chosen != alt:
+                relationships.append(
+                    EntityRelationship(
+                        from_entity=chosen,
+                        to_entity=alt,
+                        relationship="replaces",
+                        source_id=source_id,
+                        confidence="medium",
+                    )
+                )
+
+    return relationships
 
 
 def _extract_date(content: str) -> str:

@@ -192,8 +192,9 @@ def _run_extraction(config: Config, limit: int, skip_prs: bool) -> None:
 
         adr_decisions = 0
         for adr in adrs:
-            source, decisions = extract_adr_decisions(adr, config.repo)
+            source, decisions, relationships = extract_adr_decisions(adr, config.repo)
             repo_store.save_extraction_result(source, decisions)
+            repo_store.save_entity_relationships(relationships)
             adr_decisions += len(decisions)
         st.write(f"Extracted {adr_decisions} decisions from ADRs")
 
@@ -212,8 +213,9 @@ def _run_extraction(config: Config, limit: int, skip_prs: bool) -> None:
                 doc_decisions = 0
                 progress = st.progress(0, text="Analyzing docs...")
                 for i, doc in enumerate(docs):
-                    source, decisions = extract_doc_decisions(doc, config.repo, anthropic_client)
+                    source, decisions, relationships = extract_doc_decisions(doc, config.repo, anthropic_client)
                     repo_store.save_extraction_result(source, decisions)
+                    repo_store.save_entity_relationships(relationships)
                     doc_decisions += len(decisions)
                     progress.progress((i + 1) / len(docs), text=f"Analyzed {i + 1}/{len(docs)} docs")
                 st.write(f"Extracted {doc_decisions} decisions from docs")
@@ -231,8 +233,11 @@ def _run_extraction(config: Config, limit: int, skip_prs: bool) -> None:
             pr_decisions = 0
             progress = st.progress(0, text="Analyzing PRs...")
             for i, pr in enumerate(prs):
-                source, decisions = extract_pr_decisions(pr, config.repo, anthropic_client)
+                source, decisions, relationships = extract_pr_decisions(pr, config.repo, anthropic_client)
                 repo_store.save_extraction_result(source, decisions)
+                repo_store.save_entity_relationships(relationships)
+                for d in decisions:
+                    repo_store.save_file_references("decision", d.id, pr.changed_files)
                 if decisions:
                     pr_decisions += len(decisions)
                     st.write(f"  PR #{pr.number}: {len(decisions)} decision(s)")

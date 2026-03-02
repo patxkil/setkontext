@@ -6,7 +6,13 @@ import json
 import sqlite3
 from datetime import datetime
 
-from setkontext.extraction.models import Decision, Entity, Learning, Source
+from setkontext.extraction.models import (
+    Decision,
+    Entity,
+    EntityRelationship,
+    Learning,
+    Source,
+)
 
 
 class Repository:
@@ -173,6 +179,16 @@ class Repository:
                 (learning.id, entity.name, entity.entity_type),
             )
 
+        # Save file references from components
+        if learning.components:
+            for path in learning.components:
+                if path:
+                    self._conn.execute(
+                        """INSERT OR IGNORE INTO file_references (item_type, item_id, file_path)
+                        VALUES (?, ?, ?)""",
+                        ("learning", learning.id, path),
+                    )
+
         self._conn.commit()
 
     def save_learning_result(self, source: Source, learnings: list[Learning]) -> None:
@@ -275,6 +291,274 @@ class Repository:
             "gotchas": gotchas,
             "implementations": implementations,
         }
+
+    # ── Entity Relationships ────────────────────────────────────────
+
+    def save_entity_relationship(self, rel: EntityRelationship) -> None:
+        """Insert or ignore an entity relationship."""
+        self._conn.execute(
+            """INSERT OR IGNORE INTO entity_relationships
+            (from_entity, to_entity, relationship, source_id, confidence)
+            VALUES (?, ?, ?, ?, ?)""",
+            (
+                rel.from_entity.lower(),
+                rel.to_entity.lower(),
+                rel.relationship,
+                rel.source_id,
+                rel.confidence,
+            ),
+        )
+        self._conn.commit()
+
+    def save_entity_relationships(self, rels: list[EntityRelationship]) -> None:
+        """Batch save entity relationships."""
+        for rel in rels:
+            self._conn.execute(
+                """INSERT OR IGNORE INTO entity_relationships
+                (from_entity, to_entity, relationship, source_id, confidence)
+                VALUES (?, ?, ?, ?, ?)""",
+                (
+                    rel.from_entity.lower(),
+                    rel.to_entity.lower(),
+                    rel.relationship,
+                    rel.source_id,
+                    rel.confidence,
+                ),
+            )
+        self._conn.commit()
+
+    def get_related_entities(self, entity: str, depth: int = 1) -> list[dict]:
+        """Get entities related to the given entity, traversing up to depth hops."""
+        entity_lower = entity.lower()
+        visited: set[str] = {entity_lower}
+        results: list[dict] = []
+
+        current_entities = {entity_lower}
+        for _hop in range(depth):
+            if not current_entities:
+                break
+            placeholders = ",".join("?" for _ in current_entities)
+            rows = self._conn.execute(
+                f"""
+                SELECT from_entity, to_entity, relationship, confidence
+                FROM entity_relationships
+                WHERE LOWER(from_entity) IN ({placeholders})
+                   OR LOWER(to_entity) IN ({placeholders})
+                """,
+                list(current_entities) + list(current_entities),
+            ).fetchall()
+
+            next_entities: set[str] = set()
+            for row in rows:
+                r = dict(row)
+                other = r["to_entity"] if r["from_entity"] in visited else r["from_entity"]
+                if other not in visited:
+                    results.append({
+                        "entity": other,
+                        "relationship": r["relationship"],
+                        "confidence": r["confidence"],
+                        "via": r["from_entity"] if other == r["to_entity"] else r["to_entity"],
+                    })
+                    next_entities.add(other)
+            visited.update(next_entities)
+            current_entities = next_entities
+
+        return results
+
+    def get_entity_graph(self) -> dict:
+        """Get the full entity graph for visualization."""
+        # Build nodes from both decision and learning entities
+        entity_rows = self._conn.execute(
+            """
+            SELECT entity, entity_type, COUNT(*) as decision_count
+            FROM decision_entities
+            GROUP BY entity, entity_type
+            """
+        ).fetchall()
+
+        learning_counts = {}
+        for row in self._conn.execute(
+            "SELECT entity, COUNT(*) as cnt FROM learning_entities GROUP BY entity"
+        ).fetchall():
+            learning_counts[row["entity"].lower()] = row["cnt"]
+
+        nodes = []
+        seen_entities: set[str] = set()
+        for row in entity_rows:
+            entity_lower = row["entity"].lower()
+            if entity_lower not in seen_entities:
+                seen_entities.add(entity_lower)
+                nodes.append({
+                    "entity": row["entity"],
+                    "entity_type": row["entity_type"],
+                    "decision_count": row["decision_count"],
+                    "learning_count": learning_counts.get(entity_lower, 0),
+                })
+
+        # Add entities that only appear in learnings
+        for row in self._conn.execute(
+            "SELECT DISTINCT entity, entity_type FROM learning_entities"
+        ).fetchall():
+            if row["entity"].lower() not in seen_entities:
+                seen_entities.add(row["entity"].lower())
+                nodes.append({
+                    "entity": row["entity"],
+                    "entity_type": row["entity_type"],
+                    "decision_count": 0,
+                    "learning_count": learning_counts.get(row["entity"].lower(), 0),
+                })
+
+        # Build edges
+        edge_rows = self._conn.execute(
+            "SELECT from_entity, to_entity, relationship, confidence FROM entity_relationships"
+        ).fetchall()
+        edges = [dict(r) for r in edge_rows]
+
+        return {"nodes": nodes, "edges": edges}
+
+    # ── File References ────────────────────────────────────────────
+
+    def save_file_references(
+        self, item_type: str, item_id: str, paths: list[str]
+    ) -> None:
+        """Save file path references for a decision or learning."""
+        for path in paths:
+            if path:
+                self._conn.execute(
+                    """INSERT OR IGNORE INTO file_references (item_type, item_id, file_path)
+                    VALUES (?, ?, ?)""",
+                    (item_type, item_id, path),
+                )
+        self._conn.commit()
+
+    def get_items_by_file(self, file_path: str) -> list[dict]:
+        """Find decisions and learnings related to a file path (prefix match)."""
+        rows = self._conn.execute(
+            """
+            SELECT item_type, item_id, file_path
+            FROM file_references
+            WHERE file_path LIKE ? OR ? LIKE file_path || '%'
+            """,
+            (file_path + "%", file_path),
+        ).fetchall()
+
+        results: list[dict] = []
+        seen: set[str] = set()
+        for row in rows:
+            key = f"{row['item_type']}:{row['item_id']}"
+            if key in seen:
+                continue
+            seen.add(key)
+
+            if row["item_type"] == "decision":
+                d_rows = self._conn.execute(
+                    """
+                    SELECT d.*, s.url as source_url, s.title as source_title, s.source_type
+                    FROM decisions d JOIN sources s ON d.source_id = s.id
+                    WHERE d.id = ?
+                    """,
+                    (row["item_id"],),
+                ).fetchall()
+                for d in d_rows:
+                    item = self._row_to_decision_dict(d)
+                    item["_type"] = "decision"
+                    item["_matched_file"] = row["file_path"]
+                    results.append(item)
+            elif row["item_type"] == "learning":
+                l_rows = self._conn.execute(
+                    """
+                    SELECT l.*, s.url as source_url, s.title as source_title, s.source_type
+                    FROM learnings l JOIN sources s ON l.source_id = s.id
+                    WHERE l.id = ?
+                    """,
+                    (row["item_id"],),
+                ).fetchall()
+                for l in l_rows:
+                    item = self._row_to_learning_dict(l)
+                    item["_type"] = "learning"
+                    item["_matched_file"] = row["file_path"]
+                    results.append(item)
+
+        return results
+
+    # ── Temporal Queries ───────────────────────────────────────────
+
+    def get_decisions_in_range(
+        self, start: str, end: str, limit: int = 50
+    ) -> list[dict]:
+        """Get decisions within a date range (inclusive)."""
+        rows = self._conn.execute(
+            """
+            SELECT d.*, s.url as source_url, s.title as source_title, s.source_type
+            FROM decisions d
+            JOIN sources s ON d.source_id = s.id
+            WHERE d.decision_date >= ? AND d.decision_date <= ?
+            ORDER BY d.decision_date DESC
+            LIMIT ?
+            """,
+            (start, end, limit),
+        ).fetchall()
+        return [self._row_to_decision_dict(row) for row in rows]
+
+    def get_learnings_in_range(
+        self, start: str, end: str, limit: int = 50
+    ) -> list[dict]:
+        """Get learnings within a date range (inclusive)."""
+        rows = self._conn.execute(
+            """
+            SELECT l.*, s.url as source_url, s.title as source_title, s.source_type
+            FROM learnings l
+            JOIN sources s ON l.source_id = s.id
+            WHERE l.session_date >= ? AND l.session_date <= ?
+            ORDER BY l.session_date DESC
+            LIMIT ?
+            """,
+            (start, end, limit),
+        ).fetchall()
+        return [self._row_to_learning_dict(row) for row in rows]
+
+    def get_timeline(self, limit: int = 50) -> list[dict]:
+        """Get decisions and learnings merged chronologically."""
+        decisions = self._conn.execute(
+            """
+            SELECT d.*, s.url as source_url, s.title as source_title, s.source_type,
+                   d.decision_date as item_date
+            FROM decisions d
+            JOIN sources s ON d.source_id = s.id
+            WHERE d.decision_date != '' AND d.decision_date IS NOT NULL
+            ORDER BY d.decision_date DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+        learnings = self._conn.execute(
+            """
+            SELECT l.*, s.url as source_url, s.title as source_title, s.source_type,
+                   l.session_date as item_date
+            FROM learnings l
+            JOIN sources s ON l.source_id = s.id
+            WHERE l.session_date != '' AND l.session_date IS NOT NULL
+            ORDER BY l.session_date DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+        items: list[dict] = []
+        for row in decisions:
+            item = self._row_to_decision_dict(row)
+            item["_type"] = "decision"
+            item["_date"] = row["item_date"]
+            items.append(item)
+        for row in learnings:
+            item = self._row_to_learning_dict(row)
+            item["_type"] = "learning"
+            item["_date"] = row["item_date"]
+            items.append(item)
+
+        items.sort(key=lambda x: x.get("_date", ""), reverse=True)
+        return items[:limit]
 
     def _row_to_learning_dict(self, row: sqlite3.Row) -> dict:
         """Convert a database row to a learning dict with entities."""

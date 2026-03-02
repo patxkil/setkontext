@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sources (
@@ -54,12 +54,31 @@ CREATE TABLE IF NOT EXISTS learning_entities (
     PRIMARY KEY (learning_id, entity)
 );
 
+CREATE TABLE IF NOT EXISTS entity_relationships (
+    from_entity TEXT NOT NULL,
+    to_entity TEXT NOT NULL,
+    relationship TEXT NOT NULL,
+    source_id TEXT REFERENCES sources(id),
+    confidence TEXT DEFAULT 'medium',
+    PRIMARY KEY (from_entity, to_entity, relationship)
+);
+
+CREATE TABLE IF NOT EXISTS file_references (
+    item_type TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    PRIMARY KEY (item_type, item_id, file_path)
+);
+
 CREATE INDEX IF NOT EXISTS idx_decisions_source ON decisions(source_id);
 CREATE INDEX IF NOT EXISTS idx_entities_entity ON decision_entities(entity);
 CREATE INDEX IF NOT EXISTS idx_sources_repo ON sources(repo);
 CREATE INDEX IF NOT EXISTS idx_learnings_source ON learnings(source_id);
 CREATE INDEX IF NOT EXISTS idx_learnings_category ON learnings(category);
 CREATE INDEX IF NOT EXISTS idx_learning_entities_entity ON learning_entities(entity);
+CREATE INDEX IF NOT EXISTS idx_er_from ON entity_relationships(from_entity);
+CREATE INDEX IF NOT EXISTS idx_er_to ON entity_relationships(to_entity);
+CREATE INDEX IF NOT EXISTS idx_fr_path ON file_references(file_path);
 """
 
 FTS_SQL = """

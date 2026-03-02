@@ -98,7 +98,7 @@ class TestParseResponse:
                 "confidence": "high"
             }]
         }'''
-        decisions = _parse_response(self._mock_response(text), "pr:5", "2024-01-01")
+        decisions, relationships = _parse_response(self._mock_response(text), "pr:5", "2024-01-01")
         assert len(decisions) == 1
         assert decisions[0].summary == "Chose Redis for caching"
         assert decisions[0].entities[0].name == "redis"
@@ -107,17 +107,17 @@ class TestParseResponse:
 
     def test_parse_empty_decisions(self):
         text = '{"decisions": []}'
-        decisions = _parse_response(self._mock_response(text), "pr:5", "")
+        decisions, relationships = _parse_response(self._mock_response(text), "pr:5", "")
         assert decisions == []
 
     def test_parse_with_code_fences(self):
         text = '```json\n{"decisions": [{"summary": "Use X", "reasoning": "Y"}]}\n```'
-        decisions = _parse_response(self._mock_response(text), "pr:5", "")
+        decisions, relationships = _parse_response(self._mock_response(text), "pr:5", "")
         assert len(decisions) == 1
         assert decisions[0].summary == "Use X"
 
     def test_parse_invalid_json(self):
-        decisions = _parse_response(
+        decisions, relationships = _parse_response(
             self._mock_response("not json at all"), "pr:5", ""
         )
         assert decisions == []
@@ -125,7 +125,7 @@ class TestParseResponse:
     def test_parse_empty_response(self):
         resp = MagicMock()
         resp.content = []
-        decisions = _parse_response(resp, "pr:5", "")
+        decisions, relationships = _parse_response(resp, "pr:5", "")
         assert decisions == []
 
     def test_parse_multiple_decisions(self):
@@ -135,7 +135,7 @@ class TestParseResponse:
                 {"summary": "Use Avro", "reasoning": "Schema evolution", "entities": []}
             ]
         }'''
-        decisions = _parse_response(self._mock_response(text), "pr:10", "2024-03-01")
+        decisions, relationships = _parse_response(self._mock_response(text), "pr:10", "2024-03-01")
         assert len(decisions) == 2
         assert decisions[0].source_id == "pr:10"
         assert decisions[1].source_id == "pr:10"

@@ -258,8 +258,9 @@ def extract(
 
             adr_decision_count = 0
             for adr in adrs:
-                source, decisions = extract_adr_decisions(adr, config.repo)
+                source, decisions, relationships = extract_adr_decisions(adr, config.repo)
                 repo_store.save_extraction_result(source, decisions)
+                repo_store.save_entity_relationships(relationships)
                 adr_decision_count += len(decisions)
 
             rprint(f"Extracted [bold]{adr_decision_count}[/bold] decisions from ADRs")
@@ -279,8 +280,9 @@ def extract(
                 task = progress.add_task("Analyzing docs for decisions...", total=len(docs))
                 for doc in docs:
                     rprint(f"  Analyzing {doc.path}...")
-                    source, decisions = extract_doc_decisions(doc, config.repo, doc_client)
+                    source, decisions, relationships = extract_doc_decisions(doc, config.repo, doc_client)
                     repo_store.save_extraction_result(source, decisions)
+                    repo_store.save_entity_relationships(relationships)
                     doc_decision_count += len(decisions)
                     rprint(f"    → [green]{len(decisions)} decision(s)[/green]")
                     progress.update(task, advance=1)
@@ -300,8 +302,11 @@ def extract(
 
                     task = progress.add_task("Analyzing PRs for decisions...", total=len(prs))
                     for pr in prs:
-                        source, decisions = extract_pr_decisions(pr, config.repo, pr_client)
+                        source, decisions, relationships = extract_pr_decisions(pr, config.repo, pr_client)
                         repo_store.save_extraction_result(source, decisions)
+                        repo_store.save_entity_relationships(relationships)
+                        for d in decisions:
+                            repo_store.save_file_references("decision", d.id, pr.changed_files)
                         if decisions:
                             pr_with_decisions += 1
                             pr_decision_count += len(decisions)
@@ -330,10 +335,11 @@ def extract(
 
                         task = progress.add_task("Analyzing sessions for decisions...", total=len(sessions))
                         for session in sessions:
-                            source, decisions = extract_session_decisions(
+                            source, decisions, relationships = extract_session_decisions(
                                 session, config.repo, session_client
                             )
                             repo_store.save_extraction_result(source, decisions)
+                            repo_store.save_entity_relationships(relationships)
                             if decisions:
                                 sessions_with_decisions += 1
                                 session_decision_count += len(decisions)

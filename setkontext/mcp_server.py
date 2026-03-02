@@ -188,6 +188,42 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["query"],
             },
         ),
+        types.Tool(
+            name="get_related_entities",
+            description=(
+                "Find technologies and patterns related to a given entity. "
+                "Shows what uses, depends on, replaces, or conflicts with it. "
+                "Useful for understanding the technology graph around a component."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity": {
+                        "type": "string",
+                        "description": "Entity name (e.g. 'fastapi', 'postgresql')",
+                    },
+                },
+                "required": ["entity"],
+            },
+        ),
+        types.Tool(
+            name="get_context_for_file",
+            description=(
+                "Get decisions and learnings relevant to a specific file path. "
+                "Use this when starting to work on a file to understand its history, "
+                "past bugs, and architectural decisions that affect it."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "File path (e.g. 'src/auth/login.py')",
+                    },
+                },
+                "required": ["file_path"],
+            },
+        ),
     ]
 
 
@@ -233,6 +269,10 @@ def _dispatch_tool(name: str, arguments: dict) -> list[types.TextContent]:
             arguments["query"],
             arguments.get("category"),
         )
+    elif name == "get_related_entities":
+        return _handle_related_entities(arguments["entity"])
+    elif name == "get_context_for_file":
+        return _handle_context_for_file(arguments["file_path"])
     else:
         return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
 
@@ -346,14 +386,25 @@ def _handle_recall_learnings(
 
     learnings = repo.search_learnings(fts_query, category=category, limit=15)
 
-    # Also try entity matching
+    # Also try entity matching + graph-expanded search
     if len(learnings) < 5:
         seen_ids = {l["id"] for l in learnings}
         all_entities = repo.get_entities()
         query_lower = query.lower()
+        matched_entities: list[str] = []
         for e in all_entities:
             if e["entity"] in query_lower:
+                matched_entities.append(e["entity"])
                 for l in repo.get_learnings_by_entity(e["entity"]):
+                    if l["id"] not in seen_ids:
+                        seen_ids.add(l["id"])
+                        learnings.append(l)
+
+        # Graph expansion: also search related entities
+        for entity in matched_entities:
+            related = repo.get_related_entities(entity, depth=1)
+            for rel in related:
+                for l in repo.get_learnings_by_entity(rel["entity"]):
                     if l["id"] not in seen_ids:
                         seen_ids.add(l["id"])
                         learnings.append(l)
@@ -369,6 +420,50 @@ def _handle_recall_learnings(
         "query": query,
         "category_filter": category,
         "count": len(learnings),
+        "learnings": learnings,
+    }
+    return [types.TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+
+def _handle_related_entities(entity: str) -> list[types.TextContent]:
+    repo = _get_repo()
+    related = repo.get_related_entities(entity, depth=2)
+
+    if not related:
+        return [types.TextContent(
+            type="text",
+            text=f"No relationships found for '{entity}'. "
+            "Entity relationships are extracted during 'setkontext extract'.",
+        )]
+
+    result = {
+        "entity": entity,
+        "relationship_count": len(related),
+        "relationships": related,
+    }
+    return [types.TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+
+def _handle_context_for_file(file_path: str) -> list[types.TextContent]:
+    repo = _get_repo()
+    items = repo.get_items_by_file(file_path)
+
+    if not items:
+        return [types.TextContent(
+            type="text",
+            text=f"No decisions or learnings found for '{file_path}'. "
+            "File references are populated during extraction from PR changed files "
+            "and learning components.",
+        )]
+
+    decisions = [i for i in items if i.get("_type") == "decision"]
+    learnings = [i for i in items if i.get("_type") == "learning"]
+
+    result = {
+        "file_path": file_path,
+        "decision_count": len(decisions),
+        "learning_count": len(learnings),
+        "decisions": decisions,
         "learnings": learnings,
     }
     return [types.TextContent(type="text", text=json.dumps(result, indent=2, default=str))]

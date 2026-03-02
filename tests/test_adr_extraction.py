@@ -243,7 +243,7 @@ class TestExtractAdrDecisions:
             content=NYGARD_ADR,
             url="https://github.com/acme/repo/blob/main/docs/adr/001-use-postgres.md",
         )
-        source, decisions = extract_adr_decisions(adr, "acme/repo")
+        source, decisions, relationships = extract_adr_decisions(adr, "acme/repo")
 
         assert source.id == "adr:docs/adr/001-use-postgres.md"
         assert source.source_type == "adr"
@@ -256,7 +256,7 @@ class TestExtractAdrDecisions:
 
     def test_madr_adr(self):
         adr = ADRData(path="docs/adr/002-react.md", content=MADR_ADR, url="http://x")
-        source, decisions = extract_adr_decisions(adr, "acme/repo")
+        source, decisions, relationships = extract_adr_decisions(adr, "acme/repo")
 
         assert source.source_type == "adr"
         assert len(decisions) == 1
@@ -264,12 +264,12 @@ class TestExtractAdrDecisions:
 
     def test_minimal_adr(self):
         adr = ADRData(path="adr/003.md", content=MINIMAL_ADR, url="http://x")
-        source, decisions = extract_adr_decisions(adr, "acme/repo")
+        source, decisions, relationships = extract_adr_decisions(adr, "acme/repo")
         assert len(decisions) == 1
         assert "RabbitMQ" in decisions[0].summary
 
     def test_empty_adr_yields_no_decisions(self):
         adr = ADRData(path="adr/empty.md", content=EMPTY_ADR, url="http://x")
-        source, decisions = extract_adr_decisions(adr, "acme/repo")
+        source, decisions, relationships = extract_adr_decisions(adr, "acme/repo")
         assert len(decisions) == 0
         assert source.id == "adr:adr/empty.md"

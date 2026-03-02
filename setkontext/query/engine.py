@@ -218,7 +218,7 @@ class QueryEngine:
         return response.content[0].text.strip()
 
     def _find_relevant_decisions(self, question: str) -> list[dict]:
-        """Find decisions relevant to the question using FTS and entity matching."""
+        """Find decisions relevant to the question using FTS, entity, and graph matching."""
         seen_ids: set[str] = set()
         results: list[dict] = []
 
@@ -238,7 +238,16 @@ class QueryEngine:
                     seen_ids.add(d["id"])
                     results.append(d)
 
-        # Strategy 3: If nothing found, fall back to getting all decisions (limited)
+        # Strategy 3: Graph-expanded entity matching — search related entities
+        for entity in entities:
+            related = self._repo.get_related_entities(entity, depth=1)
+            for rel in related:
+                for d in self._repo.get_decisions_by_entity(rel["entity"]):
+                    if d["id"] not in seen_ids:
+                        seen_ids.add(d["id"])
+                        results.append(d)
+
+        # Strategy 4: If nothing found, fall back to getting all decisions (limited)
         if not results:
             results = self._repo.get_all_decisions(limit=10)
 

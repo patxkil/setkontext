@@ -13,6 +13,15 @@ class Entity:
 
 
 @dataclass
+class EntityRelationship:
+    from_entity: str  # e.g. "fastapi"
+    to_entity: str  # e.g. "pydantic"
+    relationship: str  # "uses" | "replaces" | "depends_on" | "conflicts_with" | "related_to"
+    source_id: str  # which extraction produced this
+    confidence: str = "medium"
+
+
+@dataclass
 class Source:
     id: str  # "pr:123" or "adr:docs/adr/001.md"
     source_type: str  # "pr" | "adr" | "doc" | "session"

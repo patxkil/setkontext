@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from github.ContentFile import ContentFile
@@ -47,6 +47,7 @@ class PRData:
     merged_at: str  # ISO format date
     review_comments: list[str]
     commit_messages: list[str]
+    changed_files: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -226,6 +227,16 @@ class Fetcher:
         except GithubException:
             pass
 
+        # Get changed files
+        changed_files: list[str] = []
+        try:
+            for f in pr.get_files():
+                if len(changed_files) >= 50:
+                    break
+                changed_files.append(f.filename)
+        except GithubException:
+            pass
+
         merged_at = ""
         if pr.merged_at:
             merged_at = pr.merged_at.isoformat()
@@ -238,6 +249,7 @@ class Fetcher:
             merged_at=merged_at,
             review_comments=review_comments,
             commit_messages=commit_messages,
+            changed_files=changed_files,
         )
 
     def _is_adr_file(self, item: ContentFile) -> bool:

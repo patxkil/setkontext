@@ -15,7 +15,7 @@ from datetime import datetime
 
 import anthropic
 
-from setkontext.extraction.models import Decision, Entity, Source
+from setkontext.extraction.models import Decision, Entity, EntityRelationship, Source
 from setkontext.github.fetcher import PRData
 
 logger = logging.getLogger(__name__)
@@ -70,7 +70,17 @@ If there ARE decisions, return:
     ],
     "confidence": "high|medium|low"
   }}
+],
+"entity_relationships": [
+  {{"from": "entity_name", "to": "other_entity", "relationship": "uses|replaces|depends_on|conflicts_with|related_to"}}
 ]}}
+
+Relationship types:
+- uses: one technology uses/depends on another (e.g. FastAPI uses Pydantic)
+- replaces: chosen over / replaces another (e.g. PostgreSQL replaces MongoDB)
+- depends_on: hard dependency
+- conflicts_with: incompatible or contradictory choices
+- related_to: general association
 
 Confidence levels:
 - high: Decision is explicitly stated and discussed
@@ -83,10 +93,10 @@ Respond ONLY with valid JSON, no other text.
 
 def extract_pr_decisions(
     pr: PRData, repo: str, client: anthropic.Anthropic
-) -> tuple[Source, list[Decision]]:
+) -> tuple[Source, list[Decision], list[EntityRelationship]]:
     """Analyze a single PR for engineering decisions using Claude.
 
-    Returns a Source and list of Decisions (usually 0, sometimes 1-2).
+    Returns a Source, list of Decisions, and list of EntityRelationships.
     """
     source = Source(
         id=f"pr:{pr.number}",
@@ -121,23 +131,23 @@ def extract_pr_decisions(
                 time.sleep(delay)
             else:
                 logger.error(f"Rate limited on PR #{pr.number} after {MAX_RETRIES} retries, skipping")
-                return source, []
+                return source, [], []
         except anthropic.APIError as e:
             logger.error(f"API error analyzing PR #{pr.number}: {e}")
-            return source, []
+            return source, [], []
 
-    decisions = _parse_response(response, source.id, pr.merged_at)
-    return source, decisions
+    decisions, relationships = _parse_response(response, source.id, pr.merged_at)
+    return source, decisions, relationships
 
 
 def extract_pr_decisions_batch(
     prs: list[PRData], repo: str, client: anthropic.Anthropic
-) -> list[tuple[Source, list[Decision]]]:
+) -> list[tuple[Source, list[Decision], list[EntityRelationship]]]:
     """Extract decisions from multiple PRs.
 
     Processes PRs individually (batching into single prompts risks quality).
     """
-    results: list[tuple[Source, list[Decision]]] = []
+    results: list[tuple[Source, list[Decision], list[EntityRelationship]]] = []
     for pr in prs:
         result = extract_pr_decisions(pr, repo, client)
         results.append(result)
@@ -178,11 +188,11 @@ def _format_commits(messages: list[str]) -> str:
 
 def _parse_response(
     response: anthropic.types.Message, source_id: str, decision_date: str
-) -> list[Decision]:
-    """Parse Claude's JSON response into Decision objects."""
+) -> tuple[list[Decision], list[EntityRelationship]]:
+    """Parse Claude's JSON response into Decision and EntityRelationship objects."""
     if not response.content:
         logger.warning(f"Empty response for source {source_id}")
-        return []
+        return [], []
     text = response.content[0].text.strip()
 
     # Handle markdown code fences
@@ -196,7 +206,7 @@ def _parse_response(
         data = json.loads(text)
     except json.JSONDecodeError:
         logger.warning(f"Failed to parse JSON for source {source_id}: {text[:200]}")
-        return []
+        return [], []
 
     decisions: list[Decision] = []
     for item in data.get("decisions", []):
@@ -217,4 +227,19 @@ def _parse_response(
                 extracted_at=datetime.now(),
             )
         )
-    return decisions
+
+    relationships: list[EntityRelationship] = []
+    valid_rels = {"uses", "replaces", "depends_on", "conflicts_with", "related_to"}
+    for item in data.get("entity_relationships", []):
+        rel_type = item.get("relationship", "")
+        if rel_type in valid_rels and item.get("from") and item.get("to"):
+            relationships.append(
+                EntityRelationship(
+                    from_entity=item["from"],
+                    to_entity=item["to"],
+                    relationship=rel_type,
+                    source_id=source_id,
+                )
+            )
+
+    return decisions, relationships
