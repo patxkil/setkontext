@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import anthropic
@@ -27,6 +27,7 @@ from setkontext.extraction.session import extract_session_decisions
 from setkontext.github.client import GitHubClient
 from setkontext.github.fetcher import Fetcher
 from setkontext.query.engine import QueryEngine
+from setkontext.query.validator import DecisionValidator
 from setkontext.storage.db import get_connection
 from setkontext.storage.repository import Repository
 
@@ -895,6 +896,72 @@ def recall(
                 rprint(f"  [dim]Date: {l['session_date']}[/dim]")
             rprint("")
 
+    finally:
+        conn.close()
+
+@app.command()
+def check(
+    days: int = typer.Option(30, help="How many days back to check for drift"),
+    db_path: str = typer.Option("setkontext.db", help="Database file path"),
+) -> None:
+    """Check recent PRs for decisions that conflict with existing ones."""
+    config = Config.load()
+    issues = config.validate()
+    if issues:
+        for issue in issues:
+            rprint(f"[red]Config error: {issue}[/red]")
+        raise typer.Exit(1)
+
+    since = datetime.now() - timedelta(days=days)
+    rprint(f"[bold]Checking PRs merged since {since.date()} for decision drift...[/bold]")
+
+    client = GitHubClient(token=config.github_token, repo=config.repo)
+    fetcher = Fetcher(client)
+    prs = fetcher.fetch_merged_prs(since=since)
+    rprint(f"Found [bold]{len(prs)}[/bold] PRs to check")
+    client.close()
+
+    if not prs:
+        rprint("[green]No recent PRs to check.[/green]")
+        raise typer.Exit(0)
+
+    # Set up validator with existing decisions
+    db = Path(db_path)
+    if not db.exists():
+        rprint(f"[red]Database not found at {db}. Run 'setkontext extract' first.[/red]")
+        raise typer.Exit(1)
+
+    conn = get_connection(db)
+    repo_store = Repository(conn)
+    anthropic_client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+    validator = DecisionValidator(repo_store, anthropic_client)
+
+    conflicts_found = 0
+
+    try:
+        for pr in prs:
+            # Build a description of what this PR did
+            approach = f"PR #{pr.number}: {pr.title}\n{pr.body or ''}"
+            context = f"Changed files: {', '.join(pr.changed_files[:10])}"
+
+            result = validator.validate(approach, context)
+
+            if result.verdict == "CONFLICTS":
+                conflicts_found += 1
+                rprint(f"\n[red bold]CONFLICT[/red bold] PR #{pr.number}: {pr.title}")
+                rprint(f"  [dim]{pr.url}[/dim]")
+                for c in result.conflicts:
+                    rprint(f"  [red]- {c.explanation}[/red]")
+                    rprint(f"    [dim]Decision: {c.decision_summary}[/dim]")
+            elif result.verdict == "ALIGNS":
+                rprint(f"[green]OK[/green] PR #{pr.number}: {pr.title}")
+            else:
+                rprint(f"[dim]--[/dim] PR #{pr.number}: {pr.title} [dim](no coverage)[/dim]")
+
+        # Summary
+        rprint(f"\n[bold]Done.[/bold] Checked {len(prs)} PRs, found {conflicts_found} conflict(s).")
+        if conflicts_found > 0:
+            rprint("[yellow]Review the conflicts above — these PRs may drift from existing decisions.[/yellow]")
     finally:
         conn.close()
 
