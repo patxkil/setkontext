@@ -631,6 +631,7 @@ def _count_json_array(preview: str, field: str) -> int:
 def ui(
     port: int = typer.Option(8501, help="Port to serve on"),
     db_path: str = typer.Option("setkontext.db", help="Database file path"),
+    host: str = typer.Option("localhost", help="Host address to bind to"),
 ) -> None:
     """Launch the setkontext web UI.
 
@@ -649,6 +650,7 @@ def ui(
     subprocess.run(
         [sys.executable, "-m", "streamlit", "run", str(ui_module),
          "--server.port", str(port),
+         "--server.address", host,
          "--server.headless", "true"],
         env=env,
     )
