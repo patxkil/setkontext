@@ -8,7 +8,6 @@ dependencies = [
     "anthropic",
     "typer",
     "rich",
-    "streamlit",
     "python-dotenv",
     "mcp>=1.26.0",
 ]
