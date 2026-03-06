@@ -7,6 +7,7 @@ Engineering context for AI coding agents — decisions from your GitHub history 
 **setkontext** solves both:
 1. **Decisions** — extracts engineering decisions from your GitHub repo (ADRs, PRs, docs) so your agent knows *why* things are built the way they are
 2. **Session memory** — automatically captures bugs solved, gotchas discovered, and features implemented across AI coding sessions so your agent doesn't repeat mistakes
+3. **Consolidation** — promotes recurring learnings into decisions when patterns emerge, closing the loop between session memory and project knowledge
 
 Everything is stored locally in SQLite with full-text search and exposed to your agent via MCP (Model Context Protocol).
 
@@ -66,6 +67,7 @@ Restart Claude Code after running `init`. It picks up `.mcp.json` automatically 
 - `list_entities` — see all technologies/patterns that have decisions
 - `get_decision_context` — full project decision summary
 - `recall_learnings` — search past session learnings (bugs, gotchas, implementations)
+- `get_session_briefing` — catch up on recent learnings, recurring patterns, and new decisions at the start of a session
 
 Session learnings are captured automatically at the end of each Claude Code session via hooks. No extra work needed.
 
@@ -98,7 +100,19 @@ setkontext recall "authentication bugs"
 setkontext recall "deployment" --category gotcha
 ```
 
-### 6. See what your agent received
+### 6. Consolidate learnings into decisions
+
+Over time, session learnings accumulate. When the same entity (e.g., "Redis") appears in multiple learnings, it may signal an implicit decision. The `consolidate` command detects these clusters and proposes decisions:
+
+```bash
+setkontext consolidate           # Interactive review — accept/reject each proposal
+setkontext consolidate --yes     # Auto-accept all proposals
+setkontext consolidate --min 3   # Require 3+ learnings per entity cluster
+```
+
+The flow: **auto-detect patterns, propose decisions, human confirms.** Decisions are never created silently — you always review first. Agents are also notified of recurring patterns via the `get_session_briefing` MCP tool.
+
+### 7. See what your agent received
 
 After your agent has used setkontext tools, review what context it got:
 
@@ -133,6 +147,7 @@ Example output:
 | `setkontext activity` | Show recent MCP tool calls and what context agents received |
 | `setkontext stats` | Show extraction and learning statistics |
 | `setkontext generate` | Generate a static context file (includes learnings) |
+| `setkontext consolidate` | Promote recurring learnings into decisions (interactive) |
 | `setkontext check` | Check recent PRs for decision drift |
 | `setkontext serve` | Start MCP server (called automatically by Claude Code) |
 
@@ -166,12 +181,12 @@ Extract decisions (Claude)       Extract learnings (Claude)
     |                                    |
     v                                    v
     +-----> SQLite + FTS5 <--------------+
-                |
-        +-------+-------+
-        |               |
+                |           ^
+        +-------+-------+  |
+        |               |  consolidate (learnings -> decisions)
         v               v
 MCP Server           CLI
-(8 tools)     (setkontext query/check/...)
+(9 tools)     (setkontext query/check/consolidate/...)
         |
         v
   AI Agent
@@ -181,7 +196,8 @@ MCP Server           CLI
 2. **Capture** — session transcripts are captured automatically (via Claude Code hook) or manually (`setkontext remember`)
 3. **Extract** — Claude identifies decisions (reasoning, alternatives, technologies) and learnings (bugs, gotchas, implementations)
 4. **Store** — everything goes into a local SQLite database with full-text search (FTS5)
-5. **Query** — MCP server or CLI lets you (or your AI agent) ask questions grounded in your team's actual decisions and learnings
+5. **Consolidate** — recurring learnings are detected and promoted into decisions when patterns emerge
+6. **Query** — MCP server or CLI lets you (or your AI agent) ask questions grounded in your team's actual decisions and learnings
 
 ## Early Alpha
 

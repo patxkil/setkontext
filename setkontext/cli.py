@@ -18,6 +18,11 @@ from setkontext.activity import read_activity_log
 from setkontext.config import Config
 from setkontext.context import generate_context_file
 from setkontext.extraction.adr import extract_adr_decisions
+from setkontext.extraction.consolidation import (
+    ConsolidationProposal,
+    create_consolidation_source,
+    find_consolidation_proposals,
+)
 from setkontext.entire.fetcher import EntireFetcher
 from setkontext.extraction.doc import extract_doc_decisions
 from setkontext.extraction.learning import extract_session_learnings
@@ -869,6 +874,112 @@ def recall(
 
     finally:
         conn.close()
+
+@app.command()
+def consolidate(
+    min_learnings: int = typer.Option(2, "--min", "-m", help="Minimum learnings per entity to consider"),
+    auto_accept: bool = typer.Option(False, "--yes", "-y", help="Accept all proposals without prompting"),
+    db_path: str = typer.Option("setkontext.db", help="Database file path"),
+) -> None:
+    """Promote recurring learnings into decisions.
+
+    Finds clusters of learnings sharing the same entity and uses an LLM to
+    determine if they collectively represent an engineering decision worth
+    documenting. Proposed decisions are shown interactively for acceptance.
+    """
+    config = Config.load()
+    if not config.anthropic_api_key:
+        rprint("[red]ANTHROPIC_API_KEY not set[/red]")
+        raise typer.Exit(1)
+
+    db = Path(db_path)
+    if not db.exists():
+        rprint(f"[red]Database not found at {db}. Run 'setkontext extract' first.[/red]")
+        raise typer.Exit(1)
+
+    conn = get_connection(db)
+    repo_store = Repository(conn)
+
+    try:
+        # Step 1: Find clusters
+        clusters = repo_store.get_learning_clusters(min_count=min_learnings)
+
+        if not clusters:
+            rprint("[yellow]No learning clusters found.[/yellow]")
+            rprint("Clusters form when multiple learnings share the same entity.")
+            rprint("Keep using setkontext and learnings will accumulate over time.")
+            raise typer.Exit(0)
+
+        rprint(f"[bold]Found {len(clusters)} entity cluster(s) with {min_learnings}+ learnings[/bold]\n")
+
+        for c in clusters:
+            existing = f" ({c['existing_decision_count']} existing decision(s))" if c["existing_decision_count"] else ""
+            rprint(f"  [cyan]{c['entity']}[/cyan]: {c['learning_count']} learnings{existing}")
+
+        rprint("")
+
+        # Step 2: Analyze clusters with LLM
+        anthropic_client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+        ) as progress:
+            task = progress.add_task("Analyzing clusters for decision patterns...", total=len(clusters))
+
+            proposals = find_consolidation_proposals(clusters, anthropic_client)
+            progress.update(task, advance=len(clusters))
+
+        if not proposals:
+            rprint("[green]No learnings warrant promotion to decisions at this time.[/green]")
+            rprint("This is normal — not every learning cluster represents a decision.")
+            raise typer.Exit(0)
+
+        # Step 3: Present proposals for acceptance
+        rprint(f"\n[bold]{len(proposals)} decision proposal(s):[/bold]\n")
+
+        accepted = 0
+        rejected = 0
+        repo_name = config.repo or "local"
+
+        for i, proposal in enumerate(proposals, 1):
+            d = proposal.decision
+            rprint(f"[bold]Proposal {i}/{len(proposals)}[/bold]")
+            rprint(f"  [green bold]{d.summary}[/green bold]")
+            rprint(f"  [dim]Reasoning:[/dim] {d.reasoning}")
+            if d.alternatives:
+                rprint(f"  [dim]Alternatives:[/dim] {', '.join(d.alternatives)}")
+            entities_str = ", ".join(e.name for e in d.entities)
+            rprint(f"  [dim]Entities:[/dim] {entities_str}")
+            rprint(f"  [dim]Confidence:[/dim] {d.confidence}")
+            rprint(f"  [dim]Based on:[/dim] {len(proposal.source_learning_ids)} learning(s)")
+            if proposal.rationale:
+                rprint(f"  [dim]Rationale:[/dim] {proposal.rationale}")
+            rprint("")
+
+            if auto_accept:
+                accept = True
+            else:
+                accept = typer.confirm("  Accept this decision?", default=True)
+
+            if accept:
+                source = create_consolidation_source(proposal, repo_name)
+                repo_store.save_extraction_result(source, [d])
+                accepted += 1
+                rprint(f"  [green]Saved.[/green]\n")
+            else:
+                rejected += 1
+                rprint(f"  [yellow]Skipped.[/yellow]\n")
+
+        # Summary
+        rprint(f"[bold]Consolidation complete:[/bold] {accepted} accepted, {rejected} skipped")
+
+        if accepted > 0:
+            rprint("\nNew decisions are now available via MCP tools and CLI queries.")
+            rprint("Run [bold]setkontext generate[/bold] to update your CLAUDE.md context file.")
+    finally:
+        conn.close()
+
 
 @app.command()
 def check(

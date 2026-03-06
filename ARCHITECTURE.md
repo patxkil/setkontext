@@ -79,3 +79,11 @@
 **Reasoning:** ADRs follow known formats with clear structure (Status, Context, Decision sections) — regex/parsing is reliable and free. PRs contain unstructured natural language where decisions are implicit — this requires LLM understanding. This hybrid approach minimizes API costs while maximizing extraction quality. Alternatives considered: LLM for everything (expensive, slower), deterministic only (misses PR decisions), embedding similarity (doesn't extract structured decisions).
 
 **Alternatives rejected:** LLM-only extraction, deterministic-only parsing, embedding-based approach
+
+## 11. Learning consolidation with human-in-the-loop
+
+**Decision:** Automatically detect recurring learning patterns but require human confirmation to promote them into decisions.
+
+**Reasoning:** Session learnings accumulate automatically via the `capture` hook. When the same entity (e.g., "Redis") appears in multiple learnings across sessions, it often signals an implicit engineering decision. The `consolidate` command groups learnings by shared entities, sends each cluster to Claude to assess if it warrants a decision, then presents proposals interactively. This follows the "auto-detect, propose, human-confirm" pattern — decisions are never created silently because they're high-trust objects that guide future agent behavior. Agents are notified of pending patterns via the `get_session_briefing` MCP tool.
+
+**Alternatives rejected:** Fully automatic consolidation (risk of polluting decisions), manual-only review (no one would do it), time-based batching (arbitrary, misses patterns)

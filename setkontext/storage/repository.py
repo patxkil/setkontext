@@ -292,6 +292,68 @@ class Repository:
             "implementations": implementations,
         }
 
+    # ── Consolidation Queries ─────────────────────────────────────
+
+    def get_learning_clusters(self, min_count: int = 2) -> list[dict]:
+        """Find entities that appear in multiple learnings — candidates for consolidation.
+
+        Returns groups of learnings sharing the same entity, sorted by count descending.
+        Only includes entities with at least `min_count` learnings.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT le.entity, le.entity_type, COUNT(DISTINCT le.learning_id) as learning_count
+            FROM learning_entities le
+            JOIN learnings l ON le.learning_id = l.id
+            GROUP BY le.entity, le.entity_type
+            HAVING COUNT(DISTINCT le.learning_id) >= ?
+            ORDER BY learning_count DESC
+            """,
+            (min_count,),
+        ).fetchall()
+
+        clusters: list[dict] = []
+        for row in rows:
+            entity = row["entity"]
+            learnings = self.get_learnings_by_entity(entity)
+
+            # Check if this entity already has decisions (may not need consolidation)
+            existing_decisions = self.get_decisions_by_entity(entity)
+
+            clusters.append({
+                "entity": entity,
+                "entity_type": row["entity_type"],
+                "learning_count": row["learning_count"],
+                "existing_decision_count": len(existing_decisions),
+                "learnings": learnings,
+            })
+
+        return clusters
+
+    def get_unconsolidated_learnings(self, limit: int = 50) -> list[dict]:
+        """Get learnings from source_type='learning' (session captures) that
+        haven't been consolidated into decisions yet.
+
+        A learning is considered unconsolidated if no decision references
+        its source_id as a consolidation origin.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT l.*, s.url as source_url, s.title as source_title, s.source_type
+            FROM learnings l
+            JOIN sources s ON l.source_id = s.id
+            WHERE s.source_type = 'learning'
+            AND l.source_id NOT IN (
+                SELECT DISTINCT s2.id FROM sources s2
+                WHERE s2.source_type = 'consolidation'
+            )
+            ORDER BY l.extracted_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [self._row_to_learning_dict(row) for row in rows]
+
     # ── Entity Relationships ────────────────────────────────────────
 
     def save_entity_relationship(self, rel: EntityRelationship) -> None:

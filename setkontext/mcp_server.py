@@ -207,6 +207,26 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="get_session_briefing",
+            description=(
+                "Get a briefing of what happened in recent sessions. "
+                "Call this at the START of a new session to catch up on: "
+                "recent learnings, recurring patterns that may warrant decisions, "
+                "and any new decisions. This prevents repeating past mistakes "
+                "and keeps you aligned with the latest team knowledge."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "lookback": {
+                        "type": "integer",
+                        "description": "Number of recent learnings to include (default: 10)",
+                        "default": 10,
+                    },
+                },
+            },
+        ),
+        types.Tool(
             name="get_context_for_file",
             description=(
                 "Get decisions and learnings relevant to a specific file path. "
@@ -271,6 +291,8 @@ def _dispatch_tool(name: str, arguments: dict) -> list[types.TextContent]:
         )
     elif name == "get_related_entities":
         return _handle_related_entities(arguments["entity"])
+    elif name == "get_session_briefing":
+        return _handle_session_briefing(arguments.get("lookback", 10))
     elif name == "get_context_for_file":
         return _handle_context_for_file(arguments["file_path"])
     else:
@@ -442,6 +464,56 @@ def _handle_related_entities(entity: str) -> list[types.TextContent]:
         "relationships": related,
     }
     return [types.TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+
+def _handle_session_briefing(lookback: int) -> list[types.TextContent]:
+    repo = _get_repo()
+
+    # Recent learnings
+    recent_learnings = repo.get_recent_learnings(limit=lookback)
+
+    # Learning clusters (potential decision candidates)
+    clusters = repo.get_learning_clusters(min_count=2)
+
+    # Recent decisions (added in last 7 days)
+    from datetime import datetime, timedelta
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    today = datetime.now().strftime("%Y-%m-%d")
+    recent_decisions = repo.get_decisions_in_range(week_ago, today)
+
+    # Build briefing
+    sections: list[str] = []
+
+    if recent_learnings:
+        lines = [f"## Recent Learnings ({len(recent_learnings)})"]
+        for l in recent_learnings[:lookback]:
+            cat = l.get("category", "unknown").replace("_", " ").upper()
+            lines.append(f"- **[{cat}]** {l.get('summary', '')}")
+        sections.append("\n".join(lines))
+
+    if clusters:
+        lines = ["## Recurring Patterns (consolidation candidates)"]
+        lines.append("These entities appear in multiple learnings. Consider running "
+                     "`setkontext consolidate` to promote them into decisions.")
+        for c in clusters:
+            existing = f" (already {c['existing_decision_count']} decision(s))" if c["existing_decision_count"] else ""
+            lines.append(f"- **{c['entity']}**: {c['learning_count']} learnings{existing}")
+        sections.append("\n".join(lines))
+
+    if recent_decisions:
+        lines = [f"## Recent Decisions ({len(recent_decisions)}, last 7 days)"]
+        for d in recent_decisions:
+            lines.append(f"- {d.get('summary', '')} [{d.get('confidence', '')}]")
+        sections.append("\n".join(lines))
+
+    if not sections:
+        return [types.TextContent(
+            type="text",
+            text="No session history yet. Learnings will accumulate as you use setkontext.",
+        )]
+
+    briefing = "# Session Briefing\n\n" + "\n\n".join(sections)
+    return [types.TextContent(type="text", text=briefing)]
 
 
 def _handle_context_for_file(file_path: str) -> list[types.TextContent]:
