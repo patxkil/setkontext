@@ -674,6 +674,30 @@ class Repository:
             **learning_stats,
         }
 
+    # ── Watermarks (Incremental Extraction) ──────────────────────
+
+    def get_watermark(self, source_type: str, key: str) -> str | None:
+        """Get a watermark value for incremental extraction.
+
+        Args:
+            source_type: e.g. "pr", "adr", "doc"
+            key: e.g. "last_merged_at", "seen_paths"
+        """
+        row = self._conn.execute(
+            "SELECT value FROM watermarks WHERE source_type = ? AND key = ?",
+            (source_type, key),
+        ).fetchone()
+        return row["value"] if row else None
+
+    def set_watermark(self, source_type: str, key: str, value: str) -> None:
+        """Set a watermark value for incremental extraction."""
+        self._conn.execute(
+            """INSERT OR REPLACE INTO watermarks (source_type, key, value, updated_at)
+            VALUES (?, ?, ?, ?)""",
+            (source_type, key, value, datetime.now().isoformat()),
+        )
+        self._conn.commit()
+
     def _row_to_decision_dict(self, row: sqlite3.Row) -> dict:
         """Convert a database row to a decision dict with entities."""
         d = dict(row)
