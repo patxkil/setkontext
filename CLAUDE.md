@@ -8,7 +8,7 @@ The decision memory layer for AI coding agents. Automatically extracts engineeri
 
 ## Product positioning
 
-- **Competitor landscape:** OpenViking (ByteDance) is a general-purpose "context database for agents" — filesystem paradigm, vector search, tiered loading. setkontext is domain-specific: engineering decisions and session memory with zero-effort extraction.
+- **Focus:** Domain-specific engineering decision memory — not a general-purpose context database. Owns the *why* behind code.
 - **Defensible moats:** (1) Auto-extraction pipeline from GitHub, (2) learning→decision consolidation flywheel, (3) decision validation & drift detection.
 - **Monetization:** Free single-user forever. Team features (sync, multi-repo, onboarding) are the paid tier.
 
@@ -45,7 +45,7 @@ setkontext/
 ├── context.py          # Context file generation (CLAUDE.md, .cursorrules)
 ├── github/
 │   ├── fetcher.py      # GitHub API client — fetches PRs, ADRs, docs
-│   └── (filter.py)     # [PLANNED] Smart PR filtering before extraction
+│   └── filter.py       # Smart PR filtering before extraction
 ├── extraction/
 │   ├── models.py       # Dataclasses: Decision, Learning, Source, Entity, etc.
 │   ├── pr_extractor.py # Claude-powered PR decision extraction
@@ -80,9 +80,9 @@ uv run setkontext serve               # Start MCP server
 - **Quality over quantity.** Fewer, high-confidence decisions beat many noisy ones.
 - **Activity logging.** All MCP tool calls log to `setkontext-activity.jsonl`. Maintain this for observability.
 
-## Database schema (v3)
+## Database schema (v4)
 
-7 tables: `sources`, `decisions`, `learnings`, `decision_entities`, `learning_entities`, `entity_relationships`, `file_references` + FTS5 virtual table `decisions_fts`.
+8 tables: `sources`, `decisions`, `learnings`, `decision_entities`, `learning_entities`, `entity_relationships`, `file_references`, `watermarks` + FTS5 virtual tables `decisions_fts`, `learnings_fts`.
 
 Decision IDs are currently UUID v4 (random). Planned: switch to UUID v5 (deterministic from source + content) for idempotent re-extraction.
 
