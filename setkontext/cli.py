@@ -5,8 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import sys
+import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -39,6 +42,80 @@ from setkontext.storage.db import get_connection
 from setkontext.storage.repository import Repository
 
 app = typer.Typer(help="Extract engineering decisions from GitHub for AI coding agents.")
+
+
+@dataclass
+class PRCycleResult:
+    """Result of a single PR extraction cycle."""
+
+    fetched: int = 0
+    analyzed: int = 0
+    skipped: int = 0
+    decisions: int = 0
+    prs_with_decisions: int = 0
+
+
+def _run_pr_cycle(
+    fetcher: Fetcher,
+    repo_store: Repository,
+    anthropic_client: anthropic.Anthropic,
+    repo: str,
+    limit: int,
+    *,
+    full: bool = False,
+    quiet: bool = False,
+) -> PRCycleResult:
+    """Fetch and extract decisions from merged PRs (one cycle).
+
+    Uses watermarks for incremental extraction unless *full* is True.
+    Returns a PRCycleResult with stats.
+    """
+    result = PRCycleResult()
+
+    pr_since: datetime | None = None
+    if not full:
+        last_merged = repo_store.get_watermark("pr", "last_merged_at")
+        if last_merged:
+            pr_since = datetime.fromisoformat(last_merged)
+            if not quiet:
+                rprint(f"[dim]Incremental: fetching PRs merged after {pr_since.date()}[/dim]")
+
+    prs = fetcher.fetch_merged_prs(since=pr_since, limit=limit)
+    result.fetched = len(prs)
+    if not quiet:
+        rprint(f"Found [bold]{len(prs)}[/bold] merged PRs")
+
+    if prs:
+        for pr in prs:
+            filter_result = should_skip(pr)
+            if filter_result.skip:
+                result.skipped += 1
+                if not quiet:
+                    rprint(f"  [dim]PR #{pr.number}: skipped ({filter_result.reason})[/dim]")
+                continue
+
+            source, decisions, relationships = extract_pr_decisions(pr, repo, anthropic_client)
+            repo_store.save_extraction_result(source, decisions)
+            repo_store.save_entity_relationships(relationships)
+            for d in decisions:
+                repo_store.save_file_references("decision", d.id, pr.changed_files)
+            if decisions:
+                result.prs_with_decisions += 1
+                result.decisions += len(decisions)
+                if not quiet:
+                    rprint(f"  PR #{pr.number}: [green]{len(decisions)} decision(s)[/green]")
+
+        result.analyzed = result.fetched - result.skipped
+
+        # Update watermark
+        latest_merged = max(
+            (pr.merged_at for pr in prs if pr.merged_at),
+            default=None,
+        )
+        if latest_merged:
+            repo_store.set_watermark("pr", "last_merged_at", latest_merged)
+
+    return result
 
 
 def _write_env(project_dir: Path, repo: str, token: str, anthropic_key: str) -> None:
@@ -188,11 +265,17 @@ def init(
         hide_input=True,
         help="Anthropic API key",
     ),
+    run_extract: bool = typer.Option(
+        True, "--extract/--no-extract",
+        help="Run extraction after setup (default: yes)",
+    ),
+    limit: int = typer.Option(50, help="Max PRs to analyze during extraction"),
 ) -> None:
     """Initialize setkontext in a project directory.
 
     Sets up credentials, creates .mcp.json for Claude Code/Cursor,
-    and adds setkontext files to .gitignore. Run in your project root.
+    adds setkontext files to .gitignore, and runs initial extraction.
+    Run in your project root.
     """
     project_dir = Path.cwd()
 
@@ -202,11 +285,25 @@ def init(
     _update_gitignore(project_dir)
 
     rprint(f"\n[green bold]setkontext initialized for {repo}[/green bold]")
-    rprint("\nNext steps:")
-    rprint("  1. Run [bold]setkontext extract[/bold] to pull decisions from GitHub")
-    rprint("  2. Restart Claude Code — it picks up the MCP server automatically")
-    rprint("  3. Your agent now has setkontext tools for querying decisions")
-    rprint("  4. Session learnings are captured automatically at end of each session")
+
+    if run_extract and anthropic_key:
+        rprint("\n[bold]Running initial extraction...[/bold]\n")
+        # Set env vars so Config.load() picks them up
+        os.environ["SETKONTEXT_GITHUB_TOKEN"] = token
+        os.environ["SETKONTEXT_REPO"] = repo
+        os.environ["ANTHROPIC_API_KEY"] = anthropic_key
+        try:
+            ctx = typer.Context(extract)
+            extract(limit=limit, db_path=str(project_dir / "setkontext.db"))
+        except SystemExit:
+            pass  # extract calls typer.Exit on completion
+        rprint("")
+
+    rprint("[bold]Setup complete.[/bold] Your agent now has setkontext tools.")
+    rprint("  Restart Claude Code — it picks up the MCP server automatically.")
+    rprint("  Session learnings are captured automatically at end of each session.")
+    if not run_extract or not anthropic_key:
+        rprint(f"\n  Run [bold]setkontext extract[/bold] to pull decisions from GitHub.")
 
 
 @app.command()
@@ -342,60 +439,16 @@ def extract(
                 rprint(f"Extracted [bold]{doc_decision_count}[/bold] decisions from docs")
 
             if not skip_prs:
-                # Incremental: only fetch PRs merged after last extraction
-                pr_since: datetime | None = None
-                if not full:
-                    last_merged = repo_store.get_watermark("pr", "last_merged_at")
-                    if last_merged:
-                        pr_since = datetime.fromisoformat(last_merged)
-                        rprint(f"[dim]Incremental: fetching PRs merged after {pr_since.date()}[/dim]")
-
                 progress.add_task(f"Fetching up to {limit} merged PRs...", total=None)
-                prs = fetcher.fetch_merged_prs(since=pr_since, limit=limit)
-                rprint(f"Found [bold]{len(prs)}[/bold] merged PRs")
-
-                if prs:
-                    pr_client = _get_anthropic_client()
-                    pr_decision_count = 0
-                    pr_with_decisions = 0
-                    pr_skipped = 0
-
-                    task = progress.add_task("Analyzing PRs for decisions...", total=len(prs))
-                    for pr in prs:
-                        # Smart filtering: skip PRs unlikely to contain decisions
-                        filter_result = should_skip(pr)
-                        if filter_result.skip:
-                            pr_skipped += 1
-                            rprint(f"  [dim]PR #{pr.number}: skipped ({filter_result.reason})[/dim]")
-                            progress.update(task, advance=1)
-                            continue
-
-                        source, decisions, relationships = extract_pr_decisions(pr, config.repo, pr_client)
-                        repo_store.save_extraction_result(source, decisions)
-                        repo_store.save_entity_relationships(relationships)
-                        for d in decisions:
-                            repo_store.save_file_references("decision", d.id, pr.changed_files)
-                        if decisions:
-                            pr_with_decisions += 1
-                            pr_decision_count += len(decisions)
-                            rprint(f"  PR #{pr.number}: [green]{len(decisions)} decision(s)[/green]")
-                        progress.update(task, advance=1)
-
-                    analyzed = len(prs) - pr_skipped
+                pr_result = _run_pr_cycle(
+                    fetcher, repo_store, _get_anthropic_client(), config.repo, limit, full=full,
+                )
+                if pr_result.fetched:
                     rprint(
-                        f"Extracted [bold]{pr_decision_count}[/bold] decisions from "
-                        f"[bold]{pr_with_decisions}[/bold] PRs "
-                        f"(analyzed {analyzed}, skipped {pr_skipped})"
+                        f"Extracted [bold]{pr_result.decisions}[/bold] decisions from "
+                        f"[bold]{pr_result.prs_with_decisions}[/bold] PRs "
+                        f"(analyzed {pr_result.analyzed}, skipped {pr_result.skipped})"
                     )
-
-                # Update PR watermark to latest merged_at timestamp
-                if prs:
-                    latest_merged = max(
-                        (pr.merged_at for pr in prs if pr.merged_at),
-                        default=None,
-                    )
-                    if latest_merged:
-                        repo_store.set_watermark("pr", "last_merged_at", latest_merged)
 
             # Fetch and extract Entire.io sessions
             if include_sessions:
@@ -1118,6 +1171,145 @@ def check(
             rprint("[yellow]Review the conflicts above — these PRs may drift from existing decisions.[/yellow]")
     finally:
         conn.close()
+
+
+@app.command()
+def dedup(
+    threshold: float = typer.Option(0.7, help="Similarity threshold (0.0-1.0)"),
+    auto_accept: bool = typer.Option(False, "--yes", "-y", help="Accept all merges without prompting"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show duplicates without merging"),
+    db_path: str = typer.Option("setkontext.db", help="Database file path"),
+) -> None:
+    """Find and merge duplicate decisions across sources.
+
+    Compares decision summaries using word overlap. When duplicates are found,
+    keeps the highest-confidence version and transfers entities/file refs
+    from the others.
+    """
+    db = Path(db_path)
+    if not db.exists():
+        rprint(f"[red]Database not found at {db}. Run 'setkontext extract' first.[/red]")
+        raise typer.Exit(1)
+
+    conn = get_connection(db)
+    repo_store = Repository(conn)
+
+    try:
+        groups = repo_store.find_duplicate_decisions(threshold=threshold)
+
+        if not groups:
+            rprint("[green]No duplicate decisions found.[/green]")
+            raise typer.Exit(0)
+
+        rprint(f"[bold]Found {len(groups)} group(s) of duplicate decisions[/bold]\n")
+
+        total_removed = 0
+        for i, group in enumerate(groups, 1):
+            rprint(f"[bold]Group {i}[/bold] ({len(group)} decisions):")
+            # Pick the best: prefer highest confidence, then most recent
+            confidence_order = {"high": 3, "medium": 2, "low": 1}
+            group.sort(
+                key=lambda d: (
+                    confidence_order.get(d.get("confidence", "medium"), 2),
+                    d.get("extracted_at", ""),
+                ),
+                reverse=True,
+            )
+
+            keep = group[0]
+            dupes = group[1:]
+
+            rprint(f"  [green]KEEP[/green] [{keep.get('source_type', '?')}] {keep['summary']}")
+            rprint(f"         [dim]confidence={keep.get('confidence', '?')}, source={keep.get('source_title', '')[:50]}[/dim]")
+            for d in dupes:
+                rprint(f"  [red]REMOVE[/red] [{d.get('source_type', '?')}] {d['summary']}")
+                rprint(f"         [dim]confidence={d.get('confidence', '?')}, source={d.get('source_title', '')[:50]}[/dim]")
+            rprint("")
+
+            if dry_run:
+                total_removed += len(dupes)
+                continue
+
+            if auto_accept or typer.confirm("  Merge this group?", default=True):
+                removed = repo_store.merge_duplicate_decisions(
+                    keep["id"], [d["id"] for d in dupes],
+                )
+                total_removed += removed
+                rprint(f"  [green]Merged — removed {removed} duplicate(s)[/green]\n")
+            else:
+                rprint(f"  [yellow]Skipped[/yellow]\n")
+
+        action = "Would remove" if dry_run else "Removed"
+        rprint(f"[bold]{action} {total_removed} duplicate decision(s).[/bold]")
+    finally:
+        conn.close()
+
+
+@app.command()
+def watch(
+    interval: int = typer.Option(300, help="Seconds between polling cycles"),
+    limit: int = typer.Option(20, help="Max PRs to fetch per cycle"),
+    db_path: str = typer.Option("setkontext.db", help="Database file path"),
+) -> None:
+    """Watch for new merged PRs and extract decisions continuously."""
+    config = Config.load()
+    issues = config.validate()
+    if issues:
+        for issue in issues:
+            rprint(f"[red]Config error: {issue}[/red]")
+        raise typer.Exit(1)
+
+    conn = get_connection(Path(db_path))
+    repo_store = Repository(conn)
+    client = GitHubClient(token=config.github_token, repo=config.repo)
+    fetcher = Fetcher(client)
+    ai_client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+
+    stop = False
+
+    def _handle_signal(signum: int, frame: object) -> None:
+        nonlocal stop
+        stop = True
+        rprint("\n[yellow]Shutting down after current cycle...[/yellow]")
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+
+    rprint(f"[bold]Watching[/bold] {config.repo} for new merged PRs (every {interval}s)")
+    rprint("[dim]Press Ctrl+C to stop[/dim]\n")
+
+    cycle = 0
+    try:
+        while not stop:
+            cycle += 1
+            rprint(f"[dim]── cycle {cycle} ({datetime.now().strftime('%H:%M:%S')}) ──[/dim]")
+
+            try:
+                result = _run_pr_cycle(
+                    fetcher, repo_store, ai_client, config.repo, limit, quiet=True,
+                )
+                if result.fetched == 0:
+                    rprint("[dim]No new PRs[/dim]")
+                else:
+                    rprint(
+                        f"Processed {result.fetched} PRs → "
+                        f"{result.decisions} decision(s) "
+                        f"(analyzed {result.analyzed}, skipped {result.skipped})"
+                    )
+            except Exception as exc:
+                rprint(f"[red]Error: {exc}[/red]")
+
+            if stop:
+                break
+
+            # Sleep in small increments so we can respond to signals quickly
+            for _ in range(interval):
+                if stop:
+                    break
+                time.sleep(1)
+    finally:
+        conn.close()
+        rprint(f"[bold]Stopped[/bold] after {cycle} cycle(s).")
 
 
 if __name__ == "__main__":
