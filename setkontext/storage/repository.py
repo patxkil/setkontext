@@ -698,6 +698,105 @@ class Repository:
         )
         self._conn.commit()
 
+    # ── Deduplication ───────────────────────────────────────────
+
+    def find_duplicate_decisions(self, threshold: float = 0.7) -> list[list[dict]]:
+        """Find groups of decisions with similar summaries.
+
+        Uses word-overlap (Jaccard similarity) on normalized summaries.
+        Returns groups of 2+ decisions that appear to be duplicates.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT d.id, d.summary, d.source_id, d.confidence, d.extracted_at,
+                   s.source_type, s.url as source_url, s.title as source_title
+            FROM decisions d
+            JOIN sources s ON d.source_id = s.id
+            ORDER BY d.extracted_at ASC
+            """
+        ).fetchall()
+
+        decisions = [dict(r) for r in rows]
+        if len(decisions) < 2:
+            return []
+
+        def _normalize(text: str) -> set[str]:
+            return {w.lower().strip(".,;:!?\"'()") for w in text.split() if len(w) > 2}
+
+        # Group by similarity
+        used: set[int] = set()
+        groups: list[list[dict]] = []
+
+        for i, d1 in enumerate(decisions):
+            if i in used:
+                continue
+            words1 = _normalize(d1["summary"])
+            if not words1:
+                continue
+
+            group = [d1]
+            for j in range(i + 1, len(decisions)):
+                if j in used:
+                    continue
+                words2 = _normalize(decisions[j]["summary"])
+                if not words2:
+                    continue
+
+                intersection = words1 & words2
+                union = words1 | words2
+                similarity = len(intersection) / len(union) if union else 0
+
+                if similarity >= threshold:
+                    group.append(decisions[j])
+                    used.add(j)
+
+            if len(group) > 1:
+                used.add(i)
+                groups.append(group)
+
+        return groups
+
+    def merge_duplicate_decisions(self, keep_id: str, remove_ids: list[str]) -> int:
+        """Merge duplicate decisions by keeping one and removing the rest.
+
+        Transfers entity associations from removed decisions to the kept one,
+        then deletes the duplicates. Returns the number of decisions removed.
+        """
+        if not remove_ids:
+            return 0
+
+        # Transfer entities from removed decisions to the kept one
+        for rid in remove_ids:
+            self._conn.execute(
+                """INSERT OR IGNORE INTO decision_entities (decision_id, entity, entity_type)
+                SELECT ?, entity, entity_type FROM decision_entities WHERE decision_id = ?""",
+                (keep_id, rid),
+            )
+            # Transfer file references
+            self._conn.execute(
+                """INSERT OR IGNORE INTO file_references (item_type, item_id, file_path)
+                SELECT 'decision', ?, file_path FROM file_references
+                WHERE item_type = 'decision' AND item_id = ?""",
+                (keep_id, rid),
+            )
+
+        # Delete duplicates
+        placeholders = ",".join("?" for _ in remove_ids)
+        self._conn.execute(
+            f"DELETE FROM decision_entities WHERE decision_id IN ({placeholders})",
+            remove_ids,
+        )
+        self._conn.execute(
+            f"DELETE FROM file_references WHERE item_type = 'decision' AND item_id IN ({placeholders})",
+            remove_ids,
+        )
+        self._conn.execute(
+            f"DELETE FROM decisions WHERE id IN ({placeholders})",
+            remove_ids,
+        )
+        self._conn.commit()
+        return len(remove_ids)
+
     def _row_to_decision_dict(self, row: sqlite3.Row) -> dict:
         """Convert a database row to a decision dict with entities."""
         d = dict(row)
