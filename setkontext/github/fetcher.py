@@ -48,6 +48,9 @@ class PRData:
     review_comments: list[str]
     commit_messages: list[str]
     changed_files: list[str] = field(default_factory=list)
+    author: str = ""  # GitHub login of the PR author
+    author_type: str = ""  # "User" or "Bot"
+    labels: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -241,6 +244,22 @@ class Fetcher:
         if pr.merged_at:
             merged_at = pr.merged_at.isoformat()
 
+        # Author metadata for filtering
+        author = ""
+        author_type = ""
+        try:
+            if pr.user:
+                author = pr.user.login or ""
+                author_type = pr.user.type or ""
+        except GithubException:
+            pass
+
+        labels: list[str] = []
+        try:
+            labels = [label.name for label in pr.labels]
+        except GithubException:
+            pass
+
         return PRData(
             number=pr.number,
             title=pr.title or "",
@@ -250,6 +269,9 @@ class Fetcher:
             review_comments=review_comments,
             commit_messages=commit_messages,
             changed_files=changed_files,
+            author=author,
+            author_type=author_type,
+            labels=labels,
         )
 
     def _is_adr_file(self, item: ContentFile) -> bool:
