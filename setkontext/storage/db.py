@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sources (
@@ -79,6 +79,14 @@ CREATE INDEX IF NOT EXISTS idx_learning_entities_entity ON learning_entities(ent
 CREATE INDEX IF NOT EXISTS idx_er_from ON entity_relationships(from_entity);
 CREATE INDEX IF NOT EXISTS idx_er_to ON entity_relationships(to_entity);
 CREATE INDEX IF NOT EXISTS idx_fr_path ON file_references(file_path);
+
+CREATE TABLE IF NOT EXISTS watermarks (
+    source_type TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (source_type, key)
+);
 """
 
 FTS_SQL = """

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -31,6 +32,7 @@ from setkontext.extraction.pr import extract_pr_decisions
 from setkontext.extraction.session import extract_session_decisions
 from setkontext.github.client import GitHubClient
 from setkontext.github.fetcher import Fetcher
+from setkontext.github.filter import should_skip
 from setkontext.query.engine import QueryEngine
 from setkontext.query.validator import DecisionValidator
 from setkontext.storage.db import get_connection
@@ -219,6 +221,7 @@ def serve() -> None:
 def extract(
     limit: int = typer.Option(50, help="Max number of PRs to analyze"),
     skip_prs: bool = typer.Option(False, help="Skip PR extraction (ADRs and docs only)"),
+    full: bool = typer.Option(False, "--full", help="Force full re-extraction (ignore watermarks)"),
     include_sessions: bool = typer.Option(
         False, "--include-sessions",
         help="Include Entire.io agent session transcripts (requires entire/checkpoints/v1 branch)",
@@ -260,7 +263,24 @@ def extract(
             # Fetch and extract ADRs
             progress.add_task("Fetching ADR files...", total=None)
             adrs = fetcher.fetch_adrs()
-            rprint(f"Found [bold]{len(adrs)}[/bold] ADR files")
+
+            # Incremental: skip ADRs with unchanged content
+            seen_adr_hashes = json.loads(repo_store.get_watermark("adr", "content_hashes") or "{}")
+            if not full and seen_adr_hashes:
+
+                new_adrs = []
+                for adr in adrs:
+                    content_hash = hashlib.sha256(adr.content.encode()).hexdigest()[:16]
+                    if seen_adr_hashes.get(adr.path) != content_hash:
+                        new_adrs.append(adr)
+                skipped_adrs = len(adrs) - len(new_adrs)
+                if skipped_adrs:
+                    rprint(f"Found [bold]{len(adrs)}[/bold] ADR files ({skipped_adrs} unchanged, skipping)")
+                else:
+                    rprint(f"Found [bold]{len(adrs)}[/bold] ADR files")
+                adrs = new_adrs
+            else:
+                rprint(f"Found [bold]{len(adrs)}[/bold] ADR files")
 
             adr_decision_count = 0
             for adr in adrs:
@@ -269,15 +289,36 @@ def extract(
                 repo_store.save_entity_relationships(relationships)
                 adr_decision_count += len(decisions)
 
+            # Update ADR content hashes watermark
+            for adr in adrs:
+                seen_adr_hashes[adr.path] = hashlib.sha256(adr.content.encode()).hexdigest()[:16]
+            repo_store.set_watermark("adr", "content_hashes", json.dumps(seen_adr_hashes))
+
             rprint(f"Extracted [bold]{adr_decision_count}[/bold] decisions from ADRs")
 
             # Fetch and extract general documentation
             progress.add_task("Fetching documentation files...", total=None)
             docs = fetcher.fetch_docs()
             # Exclude files already processed as ADRs
-            adr_paths = {adr.path for adr in adrs}
-            docs = [d for d in docs if d.path not in adr_paths]
-            rprint(f"Found [bold]{len(docs)}[/bold] documentation files")
+            all_adr_paths = set(seen_adr_hashes.keys())
+            docs = [d for d in docs if d.path not in all_adr_paths]
+
+            # Incremental: skip docs with unchanged content
+            seen_doc_hashes = json.loads(repo_store.get_watermark("doc", "content_hashes") or "{}")
+            if not full and seen_doc_hashes:
+                new_docs = []
+                for doc in docs:
+                    content_hash = hashlib.sha256(doc.content.encode()).hexdigest()[:16]
+                    if seen_doc_hashes.get(doc.path) != content_hash:
+                        new_docs.append(doc)
+                skipped_docs = len(docs) - len(new_docs)
+                if skipped_docs:
+                    rprint(f"Found [bold]{len(docs)}[/bold] documentation files ({skipped_docs} unchanged, skipping)")
+                else:
+                    rprint(f"Found [bold]{len(docs)}[/bold] documentation files")
+                docs = new_docs
+            else:
+                rprint(f"Found [bold]{len(docs)}[/bold] documentation files")
 
             if docs:
                 doc_client = _get_anthropic_client()
@@ -293,21 +334,42 @@ def extract(
                     rprint(f"    → [green]{len(decisions)} decision(s)[/green]")
                     progress.update(task, advance=1)
 
+                # Update doc content hashes watermark
+                for doc in docs:
+                    seen_doc_hashes[doc.path] = hashlib.sha256(doc.content.encode()).hexdigest()[:16]
+                repo_store.set_watermark("doc", "content_hashes", json.dumps(seen_doc_hashes))
+
                 rprint(f"Extracted [bold]{doc_decision_count}[/bold] decisions from docs")
 
             if not skip_prs:
-                # Fetch PRs
+                # Incremental: only fetch PRs merged after last extraction
+                pr_since: datetime | None = None
+                if not full:
+                    last_merged = repo_store.get_watermark("pr", "last_merged_at")
+                    if last_merged:
+                        pr_since = datetime.fromisoformat(last_merged)
+                        rprint(f"[dim]Incremental: fetching PRs merged after {pr_since.date()}[/dim]")
+
                 progress.add_task(f"Fetching up to {limit} merged PRs...", total=None)
-                prs = fetcher.fetch_merged_prs(limit=limit)
+                prs = fetcher.fetch_merged_prs(since=pr_since, limit=limit)
                 rprint(f"Found [bold]{len(prs)}[/bold] merged PRs")
 
                 if prs:
                     pr_client = _get_anthropic_client()
                     pr_decision_count = 0
                     pr_with_decisions = 0
+                    pr_skipped = 0
 
                     task = progress.add_task("Analyzing PRs for decisions...", total=len(prs))
                     for pr in prs:
+                        # Smart filtering: skip PRs unlikely to contain decisions
+                        filter_result = should_skip(pr)
+                        if filter_result.skip:
+                            pr_skipped += 1
+                            rprint(f"  [dim]PR #{pr.number}: skipped ({filter_result.reason})[/dim]")
+                            progress.update(task, advance=1)
+                            continue
+
                         source, decisions, relationships = extract_pr_decisions(pr, config.repo, pr_client)
                         repo_store.save_extraction_result(source, decisions)
                         repo_store.save_entity_relationships(relationships)
@@ -319,11 +381,21 @@ def extract(
                             rprint(f"  PR #{pr.number}: [green]{len(decisions)} decision(s)[/green]")
                         progress.update(task, advance=1)
 
+                    analyzed = len(prs) - pr_skipped
                     rprint(
                         f"Extracted [bold]{pr_decision_count}[/bold] decisions from "
                         f"[bold]{pr_with_decisions}[/bold] PRs "
-                        f"({len(prs) - pr_with_decisions} PRs had no decisions)"
+                        f"(analyzed {analyzed}, skipped {pr_skipped})"
                     )
+
+                # Update PR watermark to latest merged_at timestamp
+                if prs:
+                    latest_merged = max(
+                        (pr.merged_at for pr in prs if pr.merged_at),
+                        default=None,
+                    )
+                    if latest_merged:
+                        repo_store.set_watermark("pr", "last_merged_at", latest_merged)
 
             # Fetch and extract Entire.io sessions
             if include_sessions:
