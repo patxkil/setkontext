@@ -41,6 +41,66 @@ from setkontext.query.validator import DecisionValidator
 from setkontext.storage.db import get_connection
 from setkontext.storage.repository import Repository
 
+# Tiered context: L0 = summary only, L1 = truncated detail, L2 = full detail
+L1_MAX_CHARS = 800
+
+DETAIL_LEVEL_SCHEMA = {
+    "type": "string",
+    "enum": ["summary", "standard", "full"],
+    "description": (
+        "How much detail to return. "
+        "'summary' = one-line summaries only (cheapest). "
+        "'standard' = summaries + truncated reasoning (~800 chars). "
+        "'full' = everything including full reasoning text. "
+        "Default: standard."
+    ),
+}
+
+
+def _shape_decision(d: dict, detail_level: str) -> dict:
+    """Shape a decision dict based on the requested detail level."""
+    if detail_level == "summary":
+        return {
+            k: v for k, v in d.items()
+            if k in ("id", "summary", "confidence", "decision_date", "entities",
+                      "source_url", "source_title", "source_type")
+        }
+    elif detail_level == "full":
+        return d
+    else:  # standard
+        shaped = dict(d)
+        if shaped.get("reasoning") and len(shaped["reasoning"]) > L1_MAX_CHARS:
+            shaped["reasoning"] = shaped["reasoning"][:L1_MAX_CHARS] + "..."
+        return shaped
+
+
+def _shape_learning(l: dict, detail_level: str) -> dict:
+    """Shape a learning dict based on the requested detail level."""
+    if detail_level == "summary":
+        return {
+            k: v for k, v in l.items()
+            if k in ("id", "summary", "category", "session_date", "entities",
+                      "components", "source_url", "source_title", "source_type")
+        }
+    elif detail_level == "full":
+        return l
+    else:  # standard
+        shaped = dict(l)
+        if shaped.get("detail") and len(shaped["detail"]) > L1_MAX_CHARS:
+            shaped["detail"] = shaped["detail"][:L1_MAX_CHARS] + "..."
+        return shaped
+
+
+def _shape_items(items: list[dict], detail_level: str) -> list[dict]:
+    """Shape a list of decision or learning dicts."""
+    result = []
+    for item in items:
+        if item.get("_type") == "learning" or "category" in item:
+            result.append(_shape_learning(item, detail_level))
+        else:
+            result.append(_shape_decision(item, detail_level))
+    return result
+
 
 def _resolve_db_path() -> Path:
     """Find the database, checking CLI args, env var, then current directory."""
@@ -111,6 +171,7 @@ async def list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "Technology, pattern, or service name (e.g. 'PostgreSQL', 'FastAPI')",
                     },
+                    "detail_level": DETAIL_LEVEL_SCHEMA,
                 },
                 "required": ["entity"],
             },
@@ -184,6 +245,7 @@ async def list_tools() -> list[types.Tool]:
                         "enum": ["bug_fix", "gotcha", "implementation"],
                         "description": "Optional: filter by learning type",
                     },
+                    "detail_level": DETAIL_LEVEL_SCHEMA,
                 },
                 "required": ["query"],
             },
@@ -240,6 +302,7 @@ async def list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "File path (e.g. 'src/auth/login.py')",
                     },
+                    "detail_level": DETAIL_LEVEL_SCHEMA,
                 },
                 "required": ["file_path"],
             },
@@ -271,6 +334,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
 def _dispatch_tool(name: str, arguments: dict) -> list[types.TextContent]:
     """Route a tool call to the appropriate handler."""
+    detail = arguments.get("detail_level", "standard")
     if name == "query_decisions":
         return _handle_query(arguments["question"])
     elif name == "validate_approach":
@@ -279,7 +343,7 @@ def _dispatch_tool(name: str, arguments: dict) -> list[types.TextContent]:
             arguments.get("context", ""),
         )
     elif name == "get_decisions_by_entity":
-        return _handle_entity_query(arguments["entity"])
+        return _handle_entity_query(arguments["entity"], detail)
     elif name == "get_decision_context":
         return _handle_full_context()
     elif name == "list_entities":
@@ -288,13 +352,14 @@ def _dispatch_tool(name: str, arguments: dict) -> list[types.TextContent]:
         return _handle_recall_learnings(
             arguments["query"],
             arguments.get("category"),
+            detail,
         )
     elif name == "get_related_entities":
         return _handle_related_entities(arguments["entity"])
     elif name == "get_session_briefing":
         return _handle_session_briefing(arguments.get("lookback", 10))
     elif name == "get_context_for_file":
-        return _handle_context_for_file(arguments["file_path"])
+        return _handle_context_for_file(arguments["file_path"], detail)
     else:
         return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
 
@@ -342,7 +407,7 @@ def _handle_validate(proposed_approach: str, context: str) -> list[types.TextCon
     return [types.TextContent(type="text", text=result.to_json())]
 
 
-def _handle_entity_query(entity: str) -> list[types.TextContent]:
+def _handle_entity_query(entity: str, detail_level: str = "standard") -> list[types.TextContent]:
     repo = _get_repo()
     decisions = repo.get_decisions_by_entity(entity)
 
@@ -361,7 +426,7 @@ def _handle_entity_query(entity: str) -> list[types.TextContent]:
     result = {
         "entity": entity,
         "decision_count": len(decisions),
-        "decisions": decisions,
+        "decisions": _shape_items(decisions, detail_level),
     }
     return [types.TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
@@ -385,7 +450,7 @@ def _handle_list_entities() -> list[types.TextContent]:
 
 
 def _handle_recall_learnings(
-    query: str, category: str | None
+    query: str, category: str | None, detail_level: str = "standard"
 ) -> list[types.TextContent]:
     repo = _get_repo()
 
@@ -442,7 +507,7 @@ def _handle_recall_learnings(
         "query": query,
         "category_filter": category,
         "count": len(learnings),
-        "learnings": learnings,
+        "learnings": _shape_items(learnings, detail_level),
     }
     return [types.TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
@@ -516,7 +581,7 @@ def _handle_session_briefing(lookback: int) -> list[types.TextContent]:
     return [types.TextContent(type="text", text=briefing)]
 
 
-def _handle_context_for_file(file_path: str) -> list[types.TextContent]:
+def _handle_context_for_file(file_path: str, detail_level: str = "standard") -> list[types.TextContent]:
     repo = _get_repo()
     items = repo.get_items_by_file(file_path)
 
@@ -535,8 +600,8 @@ def _handle_context_for_file(file_path: str) -> list[types.TextContent]:
         "file_path": file_path,
         "decision_count": len(decisions),
         "learning_count": len(learnings),
-        "decisions": decisions,
-        "learnings": learnings,
+        "decisions": _shape_items(decisions, detail_level),
+        "learnings": _shape_items(learnings, detail_level),
     }
     return [types.TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
