@@ -1,8 +1,24 @@
 [project]
 name = "setkontext"
 version = "0.1.0"
-description = "Extract engineering decisions from GitHub PRs and ADRs for AI coding agents"
+description = "Decision memory for AI coding agents — extracts decisions from GitHub, captures session learnings, and consolidates patterns"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
+authors = [
+    { name = "Patrick Kilian" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Software Development :: Version Control :: Git",
+]
 dependencies = [
     "pygithub",
     "anthropic",
@@ -21,6 +37,11 @@ dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/patxkil/setkontext"
+Repository = "https://github.com/patxkil/setkontext"
+Issues = "https://github.com/patxkil/setkontext/issues"
 
 [project.scripts]
 setkontext = "setkontext.cli:app"

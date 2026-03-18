@@ -20,7 +20,7 @@
 
 **Decision:** Expose decisions to AI agents via MCP over stdio transport.
 
-**Reasoning:** MCP is the emerging standard for tool integration with AI coding agents. Claude Code and Cursor both support MCP natively. Using stdio transport means no HTTP server to manage — the agent spawns the MCP server as a subprocess. This gives agents 8 specialized tools (query_decisions, validate_approach, recall_learnings, etc.) instead of dumping all context into a static file. Alternatives considered: static CLAUDE.md file (no interactivity), HTTP API (requires running server), Language Server Protocol (wrong abstraction).
+**Reasoning:** MCP is the emerging standard for tool integration with AI coding agents. Claude Code and Cursor both support MCP natively. Using stdio transport means no HTTP server to manage — the agent spawns the MCP server as a subprocess. This gives agents 9 specialized tools (query_decisions, validate_approach, recall_learnings, etc.) instead of dumping all context into a static file. Alternatives considered: static CLAUDE.md file (no interactivity), HTTP API (requires running server), Language Server Protocol (wrong abstraction).
 
 **Alternatives rejected:** HTTP REST API, static context files only, Language Server Protocol
 
