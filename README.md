@@ -67,9 +67,11 @@ Restart Claude Code after running `init`. It picks up `.mcp.json` automatically 
 - `validate_approach` — checks if a proposed implementation conflicts with existing decisions
 - `get_decisions_by_entity` — all decisions about a specific technology
 - `list_entities` — see all technologies/patterns that have decisions
+- `get_related_entities` — explore the entity graph (what depends on what)
 - `get_decision_context` — full project decision summary
 - `recall_learnings` — search past session learnings (bugs, gotchas, implementations)
 - `get_session_briefing` — catch up on recent learnings, recurring patterns, and new decisions at the start of a session
+- `get_context_for_file` — get decisions and learnings relevant to a specific file
 
 Session learnings are captured automatically at the end of each Claude Code session via hooks. No extra work needed.
 
@@ -150,6 +152,8 @@ Example output:
 | `setkontext stats` | Show extraction and learning statistics |
 | `setkontext generate` | Generate a static context file (includes learnings) |
 | `setkontext consolidate` | Promote recurring learnings into decisions (interactive) |
+| `setkontext dedup` | Find and merge duplicate decisions across sources |
+| `setkontext watch` | Watch for new merged PRs and extract decisions continuously |
 | `setkontext check` | Check recent PRs for decision drift |
 | `setkontext serve` | Start MCP server (called automatically by Claude Code) |
 
@@ -207,7 +211,6 @@ This is v0.1.0. Expect rough edges. Known limitations:
 - Only GitHub repositories (no GitLab/Bitbucket yet)
 - Automatic session capture hooks are configured for Claude Code (`SessionEnd` hook). Other agents can use `setkontext capture` by piping transcripts to stdin.
 - Extraction and queries use the Anthropic API — you need your own API key
-- No incremental extraction yet (re-running extract processes everything again, but merges results)
 
 ## Feedback
 
