@@ -11,6 +11,8 @@ Engineering context for AI coding agents — decisions from your GitHub history 
 
 Everything is stored locally in SQLite with full-text search and exposed to your agent via MCP (Model Context Protocol).
 
+![setkontext demo](docs/demo.gif)
+
 ## Quick Start
 
 ### Prerequisites

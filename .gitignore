@@ -10,3 +10,7 @@ dist/
 build/
 .uv/
 .claude/
+CLAUDE.md
+scripts/DEMO_GUIDE.md
+scripts/seed_demo_db.py
+.DS_Store
